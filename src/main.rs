@@ -50,7 +50,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         }
     }
     else {
-        eprintln!("Error : You must specify --new-peer-id ou --read-peer-id");
+        eprintln!("Error : You must specify --new-peer-id or --read-peer-id");
     }
 
     Ok(())
