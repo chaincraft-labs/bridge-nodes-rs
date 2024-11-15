@@ -1,4 +1,4 @@
-# A RUST decentralized bridge node for relaying and validating transactions
+# Decentralized Rust Nodes for Bridging, Relaying, and Validating Transactions
 
 This project is a Rust-based decentralized bridge node designed to relay and validate transactions across networks. Its purpose is to facilitate trustless interactions between disparate blockchain networks or environments, acting as a secure and decentralized intermediary.
 
@@ -67,6 +67,7 @@ To use or contribute to this project, ensure you have Rust and Cargo installed. 
     -s, --seed-phrase <SEED_PHRASE>
     -n, --new-peer-id
     -r, --read-peer-id
+    -d, --node-rdv
     -h, --help                       Print help
     -V, --version                    Print version
     ```

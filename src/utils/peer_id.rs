@@ -23,11 +23,20 @@ pub trait UserDirectoryProvider {
 pub struct DefaultUserDirectoryProvider;
 
 impl UserDirectoryProvider for DefaultUserDirectoryProvider {
+    /// Returns the user's home directory as a `PathBuf`, or `None` if it cannot
+    /// be determined.
     fn get_user_home_dir(&self) -> Option<PathBuf> {
         UserDirs::new().map(|user_dirs| user_dirs.home_dir().to_path_buf())
     }
 }
 
+/// Takes an optional seed phrase and returns an optional 32-byte array of bytes derived from that phrase.
+///
+/// If the input seed phrase is `None`, the function will return `None`.
+///
+/// If the input seed phrase is `Some`, the function will hash the seed phrase using the SHA3-256 hash
+/// algorithm, and return the resulting 32-byte array of bytes as an `Option<[u8; 32]>`. If the
+/// resulting array of bytes cannot be converted into a 32-byte array, the function will return `None`.
 fn seed_phrase_to_bytes(seed_phrase: Option<&str>) -> Option<[u8; 32]> {
     let seed = seed_phrase?;
     let mut hasher = Sha3_256::new();
@@ -37,6 +46,22 @@ fn seed_phrase_to_bytes(seed_phrase: Option<&str>) -> Option<[u8; 32]> {
     result.as_slice().try_into().ok()
 }
 
+/// Generates a cryptographic keypair.
+///
+/// If a secret key seed is provided, the function will use it to deterministically generate an Ed25519 keypair.
+/// If no seed is provided, a new random Ed25519 keypair will be generated.
+///
+/// # Arguments
+///
+/// * `secret_key_seed` - An optional 32-byte array used to generate a deterministic keypair.
+///
+/// # Returns
+///
+/// A `Keypair` which contains the generated public and private keys.
+///
+/// # Panics
+///
+/// This function will panic if the provided seed is invalid for generating an Ed25519 keypair.
 fn generate_keypair(secret_key_seed: Option<[u8; 32]>) -> Keypair {
     match secret_key_seed {
         Some(seed) => Keypair::ed25519_from_bytes(seed).unwrap(),
@@ -44,6 +69,24 @@ fn generate_keypair(secret_key_seed: Option<[u8; 32]>) -> Keypair {
     }
 }
 
+    /// Saves a cryptographic keypair to a file on disk.
+    ///
+    /// The keypair is first encoded as a protobuf structure, then encoded as base64, and finally saved to
+    /// a file on disk. The file is saved in the user's home directory, in a directory named `.chaincraft`,
+    /// and has the filename `keypair.key`.
+    ///
+    /// If the directory `.chaincraft` does not exist, it will be created with the permissions `0o700`.
+    /// If the file `keypair.key` does not exist, it will be created with the permissions `0o600`.
+    ///
+    /// # Arguments
+    ///
+    /// * `keypair` - The cryptographic keypair to be saved.
+    /// * `provider` - An implementation of `UserDirectoryProvider` that provides the path to the user's home directory.
+    ///
+    /// # Returns
+    ///
+    /// A `Result` that indicates whether the keypair was successfully saved. If the home directory could not be
+    /// determined, the function will return `Err("Home directory not found")`.
 fn save_keypair<T: UserDirectoryProvider>(keypair: &Keypair, provider: &T) -> Result<(), Box<dyn Error>> {
     // Encode as protobuf structure.
     let encoded_keypair_pbuf = keypair.to_protobuf_encoding()?;
@@ -74,7 +117,22 @@ fn save_keypair<T: UserDirectoryProvider>(keypair: &Keypair, provider: &T) -> Re
     }
 }
 
-pub fn generate_peer_id<T: UserDirectoryProvider>(provider: &T) -> Result<PeerId, Box<dyn Error>> {
+/// Reads a cryptographic keypair from a file in the user's home directory.
+///
+/// The keypair is stored as a base64-encoded protobuf structure in a file named `keypair.key`
+/// within a directory named `.chaincraft`.
+///
+/// # Arguments
+///
+/// * `provider` - An implementation of `UserDirectoryProvider` that provides the path to
+/// the user's home directory.
+///
+/// # Returns
+///
+/// A `Result` containing the `Keypair` if the file is successfully read and decoded.
+/// Returns an error if the home directory cannot be determined, the file cannot be opened,
+/// or the content cannot be decoded.
+pub fn read_keypair_from_file<T: UserDirectoryProvider>(provider: &T) -> Result<Keypair, Box<dyn Error>> {
     if let Some(home_dir) = provider.get_user_home_dir() {
         let file_path = DEFAULT_PATH
             .iter()
@@ -85,16 +143,50 @@ pub fn generate_peer_id<T: UserDirectoryProvider>(provider: &T) -> Result<PeerId
 
         let mut encoded_secret_base64 = String::new();
         file.read_to_string(&mut encoded_secret_base64)?;
-
         let encoded_secret = STANDARD.decode(&encoded_secret_base64)?;
-        let keypair = Keypair::from_protobuf_encoding(&encoded_secret)?;
 
-        Ok(PeerId::from(keypair.public()))
+        Ok(Keypair::from_protobuf_encoding(&encoded_secret)?)
     } else {
         Err("Home directory not found".into())
     }
 }
 
+    /// Reads a cryptographic keypair from a file in the user's home directory and returns its PeerId.
+    ///
+    /// The file is read from the user's home directory in a directory named `.chaincraft`, and has the filename `keypair.key`.
+    ///
+    /// # Arguments
+    ///
+    /// * `provider` - An implementation of `UserDirectoryProvider` that provides the path to the user's home directory.
+    ///
+    /// # Returns
+    ///
+    /// A `Result` that indicates whether the PeerId was successfully generated.
+    /// If the home directory could not be determined,
+    /// the function will return `Err("Home directory not found")`.
+    /// If the file `keypair.key` does not exist or is not a valid keypair,
+    /// the function will return `Err("Error reading keypair")`.
+pub fn generate_peer_id<T: UserDirectoryProvider>(provider: &T) -> Result<PeerId, Box<dyn Error>> {
+    Ok(PeerId::from(read_keypair_from_file(provider)?.public()))
+}
+
+    /// Generates a new cryptographic keypair and saves it to the user's home directory.
+    ///
+    /// The generated keypair is saved to a file named `keypair.key` in a directory named `.chaincraft` in the user's home directory.
+    ///
+    /// The `seed_phrase` parameter is optional and can be used to generate a deterministic keypair.
+    /// If `seed_phrase` is `None`, a new random keypair will be generated.
+    ///
+    /// # Arguments
+    ///
+    /// * `seed_phrase` - An optional seed phrase used to generate a deterministic keypair.
+    /// * `provider` - An implementation of `UserDirectoryProvider` that provides the path to the user's home directory.
+    ///
+    /// # Returns
+    ///
+    /// A `Result` that indicates whether the keypair was successfully generated and saved.
+    /// If the home directory could not be determined,
+    /// the function will return `Err("Home directory not found")`.
 pub fn generate_new_keypair_and_peer_id<T: UserDirectoryProvider>(
     seed_phrase: Option<&str>,
     provider: &T,

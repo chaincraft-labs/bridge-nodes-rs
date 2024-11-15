@@ -5,6 +5,7 @@ use clap::Parser;
 use utils::peer_id::{generate_new_keypair_and_peer_id, generate_peer_id, DefaultUserDirectoryProvider};
 
 mod utils;
+mod nodes;
 
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
@@ -17,6 +18,9 @@ struct Args {
 
     #[arg(short, long)]
     read_peer_id: bool,
+
+    #[arg(short = 'd', long)]
+    node_rdv: bool,
 }
 
 
@@ -49,8 +53,11 @@ async fn main() -> Result<(), Box<dyn Error>> {
             }
         }
     }
+    else if args.node_rdv {
+        nodes::node_rdv::run().await.unwrap();
+    }
     else {
-        eprintln!("Error : You must specify --new-peer-id or --read-peer-id");
+        eprintln!("Error : --help for more information");
     }
 
     Ok(())
