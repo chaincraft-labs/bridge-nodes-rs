@@ -69,13 +69,13 @@ async fn main() -> Result<(), Box<dyn Error>> {
         nodes::node_rdv::run().await.unwrap();
     }
     else if args.node &&
-        args.rdv_point_address.len() > 0 &&
-        args.rdv_point_peer_id.len() > 0 &&
-        args.external_address.len() > 0 {
+        args.rdv_point_address.is_some() &&
+        args.rdv_point_peer_id.is_some() &&
+        args.external_address.is_some() {
         nodes::node::run(
-            args.rdv_point_address.as_str(),
-            args.rdv_point_peer_id.as_str(),
-            args.external_address.as_str(),
+            args.rdv_point_address.as_deref().unwrap(),
+            args.rdv_point_peer_id.as_deref().unwrap(),
+            args.external_address.as_deref().unwrap(),
         ).await.unwrap();
     }
     else {
