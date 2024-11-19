@@ -50,9 +50,9 @@ pub async fn run(
     // This address is recorded in the registration entry by the rendezvous point.
     let external_address = format!("/ip4/{external_address}/tcp/0").parse::<Multiaddr>().unwrap();
     swarm.add_external_address(external_address.clone());
-    swarm.dial(rendezvous_point_address.clone()).unwrap();
 
     let _ = swarm.listen_on(format!("/ip4/{external_address}/tcp/0").parse().unwrap());
+    swarm.dial(rendezvous_point_address.clone()).unwrap();
 
     while let Some(event) = swarm.next().await {
         match event {
