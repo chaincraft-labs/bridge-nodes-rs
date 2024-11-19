@@ -10,17 +10,29 @@ mod nodes;
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
 struct Args {
-    #[arg(short, long)]
+    #[arg(short = 's', long)]
     seed_phrase: Option<String>,
 
-    #[arg(short, long)]
+    #[arg(short = 'p', long)]
     new_peer_id: bool,
 
-    #[arg(short, long)]
+    #[arg(short = 'r', long)]
     read_peer_id: bool,
 
-    #[arg(short = 'd', long)]
+    #[arg(short = 'x', long)]
     node_rdv: bool,
+
+    #[arg(short = 'y', long)]
+    node: bool,
+
+    #[arg(short = 'a', long)]
+    rdv_point_address: String,
+
+    #[arg(short = 'b', long)]
+    rdv_point_peer_id: String,
+
+    #[arg(short = 'c', long)]
+    external_address: String,
 }
 
 
@@ -55,6 +67,16 @@ async fn main() -> Result<(), Box<dyn Error>> {
     }
     else if args.node_rdv {
         nodes::node_rdv::run().await.unwrap();
+    }
+    else if args.node &&
+        args.rdv_point_address.len() > 0 &&
+        args.rdv_point_peer_id.len() > 0 &&
+        args.external_address.len() > 0 {
+        nodes::node::run(
+            args.rdv_point_address.as_str(),
+            args.rdv_point_peer_id.as_str(),
+            args.external_address.as_str(),
+        ).await.unwrap();
     }
     else {
         eprintln!("Error : --help for more information");
