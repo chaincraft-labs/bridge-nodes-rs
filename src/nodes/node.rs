@@ -19,7 +19,7 @@ pub async fn run(
     external_address: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
 
-    let rendezvous_point_address: Multiaddr = rendezvous_point_address.parse::<Multiaddr>().unwrap();
+    let rendezvous_point_address: Multiaddr = format!("/ip4/{rendezvous_point_address}/tcp/62649").parse::<Multiaddr>().unwrap();
     let rendezvous_point_peer_id: PeerId = rendezvous_point_peer_id
         .parse()
         .unwrap();
