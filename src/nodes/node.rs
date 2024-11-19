@@ -49,16 +49,7 @@ pub async fn run(
 
     while let Some(event) = swarm.next().await {
         match event {
-            SwarmEvent::NewListenAddr { address, .. } => {
-                tracing::info!("Listening on {}", address);
-            }
-            SwarmEvent::ConnectionClosed {
-                peer_id,
-                cause: Some(error),
-                ..
-            } if peer_id == rendezvous_point_peer_id => {
-                tracing::error!("Lost connection to rendezvous point {}", error);
-            }
+            // 1
             SwarmEvent::ConnectionEstablished { peer_id, .. } if peer_id == rendezvous_point_peer_id => {
                 if let Err(error) = swarm.behaviour_mut().rendezvous.register(
                     rendezvous::Namespace::from_static("rendezvous"),
@@ -70,6 +61,7 @@ pub async fn run(
                 }
                 tracing::info!("Connection established with rendezvous point {}", peer_id);
             }
+            // 2
             // once `/identify` did its job, we know our external address and can register
             SwarmEvent::Behaviour(MyBehaviourEvent::Rendezvous(
                 rendezvous::client::Event::Registered {
@@ -85,6 +77,19 @@ pub async fn run(
                     ttl
                 );
             }
+            // 3
+            SwarmEvent::ConnectionClosed {
+                peer_id,
+                cause: Some(error),
+                ..
+            } if peer_id == rendezvous_point_peer_id => {
+                tracing::error!("Lost connection to rendezvous point {}", error);
+            }
+            // 4
+            SwarmEvent::NewListenAddr { address, .. } => {
+                tracing::info!("Listening on {}", address);
+            }
+            // 5
             SwarmEvent::Behaviour(MyBehaviourEvent::Rendezvous(
                 rendezvous::client::Event::RegisterFailed {
                     rendezvous_node,
@@ -106,6 +111,7 @@ pub async fn run(
                     ),
                 )));
             }
+            // 6
             SwarmEvent::Behaviour(MyBehaviourEvent::Ping(ping::Event {
                 peer,
                 result: Ok(rtt),

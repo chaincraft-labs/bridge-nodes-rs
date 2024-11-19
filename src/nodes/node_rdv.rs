@@ -43,12 +43,11 @@ pub async fn run(rendezvous_address: &str,) -> Result<(), Box<dyn std::error::Er
 
     while let Some(event) = swarm.next().await {
         match event {
+            // 1
             SwarmEvent::ConnectionEstablished { peer_id, .. } => {
                 tracing::info!("Connected to {}", peer_id);
             }
-            SwarmEvent::ConnectionClosed { peer_id, .. } => {
-                tracing::info!("Disconnected from {}", peer_id);
-            }
+            // 2
             SwarmEvent::Behaviour(MyBehaviourEvent::Rendezvous(
                 rendezvous::server::Event::PeerRegistered { peer, registration },
             )) => {
@@ -57,6 +56,10 @@ pub async fn run(rendezvous_address: &str,) -> Result<(), Box<dyn std::error::Er
                     peer,
                     registration.namespace
                 );
+            }
+            // 3
+            SwarmEvent::ConnectionClosed { peer_id, .. } => {
+                tracing::info!("Disconnected from {}", peer_id);
             }
             SwarmEvent::Behaviour(MyBehaviourEvent::Rendezvous(
                 rendezvous::server::Event::DiscoverServed {
