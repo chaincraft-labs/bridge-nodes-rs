@@ -16,7 +16,7 @@ struct MyBehaviour {
     ping: ping::Behaviour,
 }
 
-pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
+pub async fn run(rendezvous_address: &str,) -> Result<(), Box<dyn std::error::Error>> {
     let user_dir_provider = DefaultUserDirectoryProvider;
     // used as the rendezvous point by the other peer examples.
     let keypair = read_keypair_from_file(&user_dir_provider)?;
@@ -39,7 +39,7 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
         .with_swarm_config(|cfg| cfg.with_idle_connection_timeout(Duration::from_secs(5)))
         .build();
 
-    let _ = swarm.listen_on("/ip4/0.0.0.0/tcp/62649".parse().unwrap());
+    let _ = swarm.listen_on(format!("/ip4/{rendezvous_address}/tcp/62649").parse().unwrap());
 
     while let Some(event) = swarm.next().await {
         match event {

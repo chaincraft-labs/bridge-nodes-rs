@@ -65,8 +65,10 @@ async fn main() -> Result<(), Box<dyn Error>> {
             }
         }
     }
-    else if args.node_rdv {
-        nodes::node_rdv::run().await.unwrap();
+    else if args.node_rdv && args.rdv_point_address.is_some() {
+        nodes::node_rdv::run(
+            args.rdv_point_address.as_deref().unwrap()
+        ).await.unwrap();
     }
     else if args.node &&
         args.rdv_point_address.is_some() &&
