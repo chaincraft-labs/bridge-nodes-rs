@@ -26,13 +26,13 @@ struct Args {
     node: bool,
 
     #[arg(short = 'a', long)]
-    rdv_point_address: String,
+    rdv_point_address: Option<String>,
 
     #[arg(short = 'b', long)]
-    rdv_point_peer_id: String,
+    rdv_point_peer_id: Option<String>,
 
     #[arg(short = 'c', long)]
-    external_address: String,
+    external_address: Option<String>,
 }
 
 
