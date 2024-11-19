@@ -48,9 +48,9 @@ pub async fn run(
 
     // In production the external address should be the publicly facing IP address of the rendezvous point.
     // This address is recorded in the registration entry by the rendezvous point.
-    let external_address = format!("/ip4/{external_address}/tcp/0").parse::<Multiaddr>().unwrap();
+    // let external_address = format!("/ip4/{external_address}/tcp/0").parse::<Multiaddr>().unwrap();
+    // swarm.add_external_address(external_address);
     let _ = swarm.listen_on(format!("/ip4/{external_address}/tcp/0").parse().unwrap());
-    swarm.add_external_address(external_address);
     swarm.dial(rendezvous_point_address.clone()).unwrap();
 
     while let Some(event) = swarm.next().await {
