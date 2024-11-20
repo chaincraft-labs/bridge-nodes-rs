@@ -43,6 +43,9 @@ struct Args {
 
     #[arg(short = 'm', long)]
     bootstrap_peer_id: Option<String>,
+
+    #[arg(short = 'n', long)]
+    bootstrap: bool,
 }
 
 
@@ -84,8 +87,16 @@ async fn main() -> Result<(), Box<dyn Error>> {
         args.bootstrap_peer_id.is_some() &&
         args.bootstrap_address.is_some() {
         nodes::node_kad::run(
-            args.bootstrap_address.as_deref().unwrap(),
-            args.bootstrap_peer_id.as_deref().unwrap(),
+            args.bootstrap_address.as_deref(),
+            args.bootstrap_peer_id.as_deref(),
+            args.bootstrap,
+        ).await.unwrap();
+    }
+    else if args.node_kad && args.bootstrap {
+        nodes::node_kad::run(
+            None,
+            None,
+            args.bootstrap,
         ).await.unwrap();
     }
     else if args.node &&
