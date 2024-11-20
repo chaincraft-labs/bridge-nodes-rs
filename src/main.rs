@@ -33,6 +33,16 @@ struct Args {
 
     #[arg(short = 'c', long)]
     external_address: Option<String>,
+
+    // kademlia
+    #[arg(short = 'k', long)]
+    node_kad: bool,
+
+    #[arg(short = 'l', long)]
+    bootstrap_address: Option<String>,
+
+    #[arg(short = 'm', long)]
+    bootstrap_peer_id: Option<String>,
 }
 
 
@@ -68,6 +78,14 @@ async fn main() -> Result<(), Box<dyn Error>> {
     else if args.node_rdv && args.rdv_point_address.is_some() {
         nodes::node_rdv::run(
             args.rdv_point_address.as_deref().unwrap()
+        ).await.unwrap();
+    }
+    else if args.node_kad &&
+        args.bootstrap_peer_id.is_some() &&
+        args.bootstrap_address.is_some() {
+        nodes::node_kad::run(
+            args.bootstrap_address.as_deref().unwrap(),
+            args.bootstrap_peer_id.as_deref().unwrap(),
         ).await.unwrap();
     }
     else if args.node &&

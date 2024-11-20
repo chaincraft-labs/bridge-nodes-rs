@@ -48,8 +48,9 @@ pub async fn run(
 
     // In production the external address should be the publicly facing IP address of the rendezvous point.
     // This address is recorded in the registration entry by the rendezvous point.
-    let external_address_formatted = format!("/ip4/{external_address}/tcp/0").parse::<Multiaddr>().unwrap();
-    swarm.add_external_address(external_address_formatted.clone());
+
+    // let external_address_formatted = format!("/ip4/{external_address}/tcp/0").parse::<Multiaddr>().unwrap();
+    // swarm.add_external_address(external_address_formatted.clone());
 
     let _ = swarm.listen_on(format!("/ip4/{external_address}/tcp/0").parse().unwrap());
     swarm.dial(rendezvous_point_address.clone()).unwrap();
@@ -57,17 +58,21 @@ pub async fn run(
     while let Some(event) = swarm.next().await {
         match event {
             // 1 Connection to rendezvous point
-            SwarmEvent::ConnectionEstablished { peer_id, .. } if peer_id == rendezvous_point_peer_id => {
-                if let Err(error) = swarm.behaviour_mut().rendezvous.register(
-                    rendezvous::Namespace::from_static("rendezvous"),
-                    rendezvous_point_peer_id,
-                    None,
-                ) {
-                    tracing::error!("Failed to register: {error}");
-                    return Err(Box::new(error) as Box<dyn std::error::Error>);
+            SwarmEvent::ConnectionEstablished { peer_id, .. }
+                if peer_id == rendezvous_point_peer_id => {
+                    // Error
+                    if let Err(error) = swarm.behaviour_mut().rendezvous.register(
+                        rendezvous::Namespace::from_static("rendezvous"),
+                        rendezvous_point_peer_id,
+                        None,
+                    ) {
+                        tracing::error!("Failed to register: {error}");
+                        return Err(Box::new(error) as Box<dyn std::error::Error>);
+                    }
+
+                    // Ok
+                    tracing::info!("Connection established with rendezvous point {}", peer_id);
                 }
-                tracing::info!("Connection established with rendezvous point {}", peer_id);
-            }
             // 2 Registration to rendezvous point
             SwarmEvent::Behaviour(MyBehaviourEvent::Rendezvous(
                 rendezvous::client::Event::Registered {
@@ -76,6 +81,7 @@ pub async fn run(
                     rendezvous_node,
                 },
             )) => {
+                // Ok
                 tracing::info!(
                     "Registered for namespace '{}' at rendezvous point {} for the next {} seconds",
                     namespace,
@@ -89,6 +95,7 @@ pub async fn run(
                 cause: Some(error),
                 ..
             } if peer_id == rendezvous_point_peer_id => {
+                // Error
                 tracing::error!("Lost connection to rendezvous point {}", error);
             }
             // 4
@@ -97,9 +104,12 @@ pub async fn run(
                 info,
                 ..
             })) => {
+                // Ok
                 // Register our external address. Needs to be done explicitly
                 // for this case, as it's a local address.
                 swarm.add_external_address(info.observed_addr);
+
+                // Error
                 if let Err(error) = swarm.behaviour_mut().rendezvous.register(
                     rendezvous::Namespace::from_static("rendezvous"),
                     rendezvous_point_peer_id,
@@ -114,6 +124,7 @@ pub async fn run(
             }
             // 5
             SwarmEvent::Behaviour(MyBehaviourEvent::Rendezvous(
+                // Error
                 rendezvous::client::Event::RegisterFailed {
                     rendezvous_node,
                     namespace,
