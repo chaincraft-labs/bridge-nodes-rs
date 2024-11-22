@@ -1,16 +1,31 @@
 use futures::StreamExt;
+use std::sync::Arc;
+use tokio::sync::Mutex;
+use tokio::{
+    io::{self},
+    select,
+};
 use libp2p::{
-    gossipsub, identify, kad, ping, swarm::{NetworkBehaviour, SwarmEvent}, Multiaddr, PeerId, SwarmBuilder
+    gossipsub::{self}, identify, kad, noise, ping, swarm::{NetworkBehaviour, SwarmEvent}, tcp, yamux, Multiaddr, PeerId, SwarmBuilder
 };
 use libp2p::kad::store::MemoryStore;
 use libp2p::kad::Mode;
+use serde::{Deserialize, Serialize};
 use std::{str::FromStr, time::Duration};
 use std::hash::{Hash, Hasher};
 use std::collections::hash_map::DefaultHasher;
-use tokio::io;
+
 
 use crate::utils::peer_id::{read_keypair_from_file, DefaultUserDirectoryProvider};
 
+
+// for testin
+#[derive(Debug, Serialize, Deserialize)]
+struct CustomEvent {
+    timestamp: u64,
+    event_type: String,
+    data: String,
+}
 
 
 #[derive(NetworkBehaviour)]
@@ -25,14 +40,23 @@ pub async fn run(
     bootstrap_address: Option<&str>,
     bootstrap_peer_id: Option<&str>,
     bootstrap: bool,
+    authorized_peer_id: Option<&str>,
 ) -> Result<(), Box<dyn std::error::Error>> {
 
     let user_dir_provider = DefaultUserDirectoryProvider;
     let keypair = read_keypair_from_file(&user_dir_provider)?;
 
+    // Gossipsub
+    let gossipsub_topic = gossipsub::IdentTopic::new("custom_events");
+
     let mut swarm = SwarmBuilder::with_existing_identity(keypair.clone())
         .with_tokio()
-        .with_quic()
+        // .with_quic()
+        .with_tcp(
+            tcp::Config::default(),
+            noise::Config::new,
+            yamux::Config::default,
+        )?
         .with_dns()?
         .with_behaviour(|key |{
             let message_id_fn = |message: &gossipsub::Message| {
@@ -69,56 +93,218 @@ pub async fn run(
         .with_swarm_config(|cfg| cfg.with_idle_connection_timeout(Duration::from_secs(5)))
         .build();
 
-    swarm.listen_on("/ip4/0.0.0.0/udp/62649/quic-v1".parse()
+    // Subscribe to the topic
+    tracing::info!("Subscribing to {gossipsub_topic:?}");
+    swarm
+        .behaviour_mut()
+        .gossipsub
+        .subscribe(&gossipsub_topic)
+        .unwrap();
+
+    // swarm.listen_on("/ip4/0.0.0.0/udp/62649/quic-v1".parse()
+    swarm.listen_on("/ip4/0.0.0.0/tcp/62649".parse()
         .map_err(|e| format!("Parse error: {}", e))?)
         .map_err(|e| format!("Listen error: {}", e))?;
 
     swarm.behaviour_mut().kademlia.set_mode(Some(Mode::Server));
 
-    // if bootstrap {
-    //     // let local_address: Multiaddr = format!("/ip4/127.0.0.1/udp/62649/quic-v1").parse::<Multiaddr>().unwrap();
-    //     // let local_address: Multiaddr = format!("/ip4/192.168.1.64/udp/62649/quic-v1").parse::<Multiaddr>().unwrap();
-    //     let peer_id = &keypair.clone().public().to_peer_id();
-    //     tracing::info!("Node set as bootstrap with peer id {}", peer_id);
+    if bootstrap {
+        let peer_id = &keypair.clone().public().to_peer_id();
+        tracing::info!("Node set as bootstrap with peer id {}", peer_id);
 
-    //     swarm.behaviour_mut()
-    //         .kademlia.add_address(peer_id, "/dnsaddr/bootstrap.libp2p.io".parse()?);
-    //     // swarm.behaviour_mut()
-    //     //     .kademlia.bootstrap()
-    //     //     .map_err(|e| format!("Bootstrap error: {}", e))?;
-    // } else {
-    //     if bootstrap_address.is_none() || bootstrap_peer_id.is_none() {
-    //         return Err(Box::new(std::io::Error::new(
-    //             std::io::ErrorKind::Other,
-    //             "Missing bootstrap address or peer ID",
-    //         )));
-    //     }
+        swarm.behaviour_mut().kademlia.set_mode(Some(Mode::Server));
+    } else {
+        if bootstrap_address.is_none() || bootstrap_peer_id.is_none() {
+            return Err(Box::new(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                "Missing bootstrap address or peer ID",
+            )));
+        }
 
-    //     let bootstrap_peer_id: PeerId = PeerId::from_str(bootstrap_peer_id.unwrap()).unwrap();
-    //     let bootstrap_address: Multiaddr = format!("/ip4/{}/udp/62649/quic-v1", bootstrap_address.unwrap()).parse::<Multiaddr>().unwrap();
-    //     tracing::info!("Node set with bootstrap peer id {} and address {}", bootstrap_peer_id, bootstrap_address);
-    //     swarm.behaviour_mut()
-    //         .kademlia.add_address(&bootstrap_peer_id, bootstrap_address.clone());
+        let bootstrap_peer_id: PeerId = PeerId::from_str(bootstrap_peer_id.unwrap()).unwrap();
+        // let bootstrap_address: Multiaddr = format!("/ip4/{}/udp/62649/quic-v1", bootstrap_address.unwrap()).parse::<Multiaddr>().unwrap();
 
-    //     swarm.behaviour_mut()
-    //         .kademlia.bootstrap()
-    //         .map_err(|e| format!("Bootstrap error: {}", e))?;
-    // }
+        let bootstrap_addr = bootstrap_address.unwrap();
+        let bootstrap_address: Multiaddr = if bootstrap_addr.parse::<std::net::IpAddr>().is_ok() {
+            format!("/ip4/{}/tcp/62649", bootstrap_addr)
+        } else {
+            format!("/dns4/{}/tcp/62649", bootstrap_addr)
+        }.parse::<Multiaddr>().unwrap();
+
+        // Ou version avec DNS et sous-domaines
+        // let bootstrap_address: Multiaddr = format!("/dnsaddr/{}/tcp/62649", bootstrap_address.unwrap())
+        //     .parse::<Multiaddr>()
+        //     .unwrap();
+
+        tracing::info!("Node set with bootstrap peer id {} and address {}", bootstrap_peer_id, bootstrap_address);
+
+        swarm.behaviour_mut()
+            .kademlia.add_address(&bootstrap_peer_id, bootstrap_address.clone());
+
+        tokio::time::sleep(Duration::from_secs(2)).await;
+
+        // Run bootstrap
+        match swarm.behaviour_mut().kademlia.bootstrap() {
+            Ok(_) => tracing::info!("Bootstrap process started"),
+            Err(e) => tracing::error!("Failed to start bootstrap: {}", e),
+        }
+    }
+
+    // for testing - simulate event from blockchain
+    // Specific peer ID that's allowed to generate events
+
+    // Wrap swarm in Arc<Mutex>
+    let swarm = Arc::new(Mutex::new(swarm));
+    // Clone Arc for event_generation
+    let swarm_event = Arc::clone(&swarm);
+    let gossipsub_topic_clone = gossipsub_topic.clone();
+    // Clone `authorized_peer_id` to extend its lifetime.
+    let authorized_peer_id = authorized_peer_id.map(|id| id.to_string());
+
+    // Set up periodic event generation if we're the authorized peer
+    let mut event_generation = tokio::spawn(async move {
+        let current_peer_id = keypair.public().to_peer_id().to_string();
+
+        if let Some(auth_peer_id) = authorized_peer_id {
+            if current_peer_id == auth_peer_id {
+                loop {
+                    tokio::time::sleep(Duration::from_secs(10)).await;
+
+                    let event = CustomEvent {
+                        timestamp: std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .unwrap()
+                            .as_secs(),
+                        event_type: "ExampleEvent".to_string(),
+                        data: "Some event data".to_string(),
+                    };
+
+                    let message = serde_json::to_string(&event).unwrap();
+
+                    // Lock swarm only when needed
+                    let mut swarm = swarm_event.lock().await;
+
+                    if let Err(e) = swarm.behaviour_mut().gossipsub.publish(
+                        gossipsub_topic_clone.clone(),
+                        message.as_bytes(),
+                    ) {
+                        tracing::error!("Failed to publish event: {:?}", e);
+                    } else {
+                        tracing::info!("Event published successfully");
+                    }
+                }
+            }
+        }
+
+        Ok::<(), Box<dyn std::error::Error + Send>>(())
+    });
+
+    let mut event_generation_completed = false;
 
     loop {
-        let event = swarm.select_next_some().await;
+        select! {
+            result = &mut event_generation, if !event_generation_completed => {
+                match result {
+                    Ok(Ok(())) => {
+                        tracing::info!("Event generation task completed successfully");
+                        event_generation_completed = true;
+                    }
+                    Ok(Err(e)) => {
+                        tracing::error!("Event generation task failed: {:?}", e);
+                        event_generation_completed = true;
+                    }
+                    Err(e) => {
+                        tracing::error!("Event generation task panicked: {:?}", e);
+                        event_generation_completed = true;
+                    }
+                }
+            }
 
-        match event {
-            SwarmEvent::ConnectionEstablished { peer_id, endpoint, .. } => {
-                tracing::info!("Connected to {} via {:?}", peer_id, endpoint);
+            event = async {
+                let mut swarm = swarm.lock().await;
+                swarm.next().await
+            } => {
+                if let Some(event) = event {
+                    match event {
+                        // Gossipsub Event Handling
+                        SwarmEvent::Behaviour(MyBehaviourEvent::Gossipsub(gossipsub::Event::Message {
+                            propagation_source: peer_id,
+                            message_id: id,
+                            message,
+                        })) => {
+                            tracing::info!(
+                                "Got message: {} with id: {} from peer: {:?}",
+                                String::from_utf8_lossy(&message.data),
+                                id,
+                                peer_id
+                            );
+                        }
+
+                        // Handling Kademlia Events
+                        SwarmEvent::Behaviour(MyBehaviourEvent::Kademlia(kad::Event::RoutingUpdated {
+                            peer,
+                            addresses,
+                            ..
+                        })) => {
+                            tracing::info!("Routing table updated - Peer: {:?}, Addresses: {:?}", peer, addresses);
+                        }
+
+                        SwarmEvent::Behaviour(MyBehaviourEvent::Kademlia(kad::Event::OutboundQueryProgressed {
+                            result,
+                            stats,
+                            ..
+                        })) => {
+                            match result {
+                                kad::QueryResult::Bootstrap(Ok(ok)) => {
+                                    tracing::info!("Bootstrap completed successfully with stats: {:?}, ok: {:?}", stats, ok);
+                                }
+                                kad::QueryResult::Bootstrap(Err(err)) => {
+                                    tracing::error!("Bootstrap process failed: {:?}", err);
+                                }
+                                kad::QueryResult::GetClosestPeers(Ok(peers)) => {
+                                    tracing::info!("Found closest peers: {:?}", peers);
+                                }
+                                kad::QueryResult::GetProviders(Ok(providers)) => {
+                                    tracing::info!("Found providers: {:?}", providers);
+                                }
+                                kad::QueryResult::GetRecord(Ok(records)) => {
+                                    tracing::info!("Found records: {:?}", records);
+                                }
+                                kad::QueryResult::PutRecord(Ok(put_result)) => {
+                                    tracing::info!("Record put successfully: {:?}", put_result);
+                                }
+                                kad::QueryResult::StartProviding(Ok(providing)) => {
+                                    tracing::info!("Started providing: {:?}", providing);
+                                }
+                                _ => {
+                                    tracing::debug!("Other query result: {:?}", result);
+                                }
+                            }
+                        }
+
+                        // Handling Connection Established
+                        SwarmEvent::ConnectionEstablished { peer_id, endpoint, .. } => {
+                            tracing::info!("Connected to {} via {:?}", peer_id, endpoint);
+                        }
+
+                        // Handling New Listen Address
+                        SwarmEvent::NewListenAddr { address, .. } => {
+                            tracing::info!("Listening on {}", address);
+                        }
+
+                        // Handling Identify Behaviour Events
+                        SwarmEvent::Behaviour(MyBehaviourEvent::Identify(identify::Event::Sent { peer_id, .. })) => {
+                            tracing::info!("Sent identify info to {:?}", peer_id);
+                        }
+
+                        SwarmEvent::Behaviour(MyBehaviourEvent::Identify(identify::Event::Received { info, .. })) => {
+                            tracing::info!("Received {:?}", info);
+                        }
+
+                        _ => tracing::debug!("Other event: {:?}", event),
+                    }
+                }
             }
-            SwarmEvent::NewListenAddr { address, .. } => {
-                tracing::info!("Listening on {}", address);
-            }
-            _ => tracing::debug!("Other event: {:?}", event),
         }
     }
 }
-
-
-

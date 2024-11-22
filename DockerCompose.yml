@@ -1,0 +1,98 @@
+services:
+  bootstrap:
+    build:
+      context: .
+    container_name: node_kdm_bootstrap
+    ports:
+      # - "62649:62649/udp"
+      - "62649:62649"
+    networks:
+      - bridge
+    restart: unless-stopped
+
+  client1:
+    build:
+      context: .
+    container_name: node_kdm_client1
+    ports:
+      # - "62650:62649/udp"
+      - "62650:62649"
+    networks:
+      - bridge
+  client2:
+    build:
+      context: .
+    container_name: node_kdm_client2
+    ports:
+      # - "62651:62649/udp"
+      - "62651:62649"
+    networks:
+      - bridge
+
+  client3:
+    build:
+      context: .
+    container_name: node_kdm_client3
+    ports:
+      # - "62652:62649/udp"
+      - "62652:62649"
+    networks:
+      - bridge
+
+  client4:
+    build:
+      context: .
+    container_name: node_kdm_client4
+    ports:
+      # - "62653:62649/udp"
+      - "62653:62649"
+    networks:
+      - bridge
+
+  client5:
+    build:
+      context: .
+    container_name: node_kdm_client5
+    ports:
+      # - "62654:62649/udp"
+      - "62654:62649"
+    networks:
+      - bridge
+
+networks:
+  bridge:
+  external:
+    name: bridge
+
+
+# Build images without cache
+# --------------------------------
+# docker compose -f bridge_p2p_nodes_kdm.yml build --no-cache
+
+# Start containers
+# ---------------------
+# docker compose -f bridge_p2p_nodes_kdm.yml up
+
+# Start un seul conteneur
+# ------------------------
+# docker compose -f bridge_p2p_nodes_kdm.yml up node_kdm_bootstrap
+
+# Stop all containers
+# ----------------------
+# docker compose -f bridge_p2p_nodes_kdm.yml down
+
+# Stop all containers
+# --------------------
+# docker compose -f bridge_p2p_nodes_kdm.yml stop node_kdm_client1
+
+# Start a single container without rebuilding
+# ------------------------
+# docker compose -f bridge_p2p_nodes_kdm.yml up --no-build node_kdm_bootstrap
+
+# Execute the container in the background
+# -------------------------------------
+# docker compose -f bridge_p2p_nodes_kdm.yml up -d node_kdm_bootstrap
+
+# Connect to the container
+# -------------------------
+# docker exec --privileged -ti node_kdm_bootstrap /bin/bash
