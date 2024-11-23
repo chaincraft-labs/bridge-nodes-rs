@@ -6,27 +6,25 @@ RUN apt-get update -y && \
     openssh-server nano net-tools netcat && \
     rm -rf /var/lib/apt/lists/* /var/cache/apt/archives/*
 
-
 RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y && \
     echo "source $HOME/.cargo/env" >> /root/.bashrc && \
     . "$HOME/.cargo/env"
 
 ENV PATH="/root/.cargo/bin:${PATH}"
 
-RUN mkdir -p /tmp/bridge-nodes-rs
-COPY . /tmp/bridge-nodes-rs
+RUN mkdir -p /usr/src/app/bridge-nodes-rs
 
-WORKDIR /tmp
-# RUN git clone -b feat-identify-node https://github.com/chaincraft-labs/bridge-nodes-rs.git
+COPY . /usr/src/app/bridge-nodes-rs
 
-WORKDIR /tmp/bridge-nodes-rs
+WORKDIR /usr/src/app/bridge-nodes-rs
 
 RUN cargo build --release
 
 RUN echo "PS1='[\u@\h \$(hostname -I | awk '\''{print \$1}'\'') \W]\$ '" >> /root/.bashrc
 
-# EXPOSE 62649
-# EXPOSE 62649/udp
+# @dev this container will listen to these ports
+EXPOSE 62649/udp
+EXPOSE 62649
 
-# Start a listener on port 62649
-CMD ["nc", "-u", "-l", "-p", "62649"]
+ENV RUST_LOG=info
+CMD ["tail", "-f", "/dev/null"]

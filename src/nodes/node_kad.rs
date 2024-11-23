@@ -46,17 +46,14 @@ pub async fn run(
     let user_dir_provider = DefaultUserDirectoryProvider;
     let keypair = read_keypair_from_file(&user_dir_provider)?;
 
-    // Gossipsub
-    let gossipsub_topic = gossipsub::IdentTopic::new("custom_events");
-
     let mut swarm = SwarmBuilder::with_existing_identity(keypair.clone())
         .with_tokio()
-        // .with_quic()
-        .with_tcp(
-            tcp::Config::default(),
-            noise::Config::new,
-            yamux::Config::default,
-        )?
+        // .with_tcp(
+        //     tcp::Config::default(),
+        //     noise::Config::new,
+        //     yamux::Config::default,
+        // )?
+        .with_quic()
         .with_dns()?
         .with_behaviour(|key |{
             let message_id_fn = |message: &gossipsub::Message| {
@@ -93,6 +90,8 @@ pub async fn run(
         .with_swarm_config(|cfg| cfg.with_idle_connection_timeout(Duration::from_secs(5)))
         .build();
 
+    // Create a Gossipsub topic
+    let gossipsub_topic = gossipsub::IdentTopic::new("custom_events");
     // Subscribe to the topic
     tracing::info!("Subscribing to {gossipsub_topic:?}");
     swarm
@@ -101,19 +100,17 @@ pub async fn run(
         .subscribe(&gossipsub_topic)
         .unwrap();
 
+    swarm.listen_on("/ip4/0.0.0.0/udp/62649/quic-v1".parse()?)?;
     // swarm.listen_on("/ip4/0.0.0.0/udp/62649/quic-v1".parse()
-    swarm.listen_on("/ip4/0.0.0.0/tcp/62649".parse()
-        .map_err(|e| format!("Parse error: {}", e))?)
-        .map_err(|e| format!("Listen error: {}", e))?;
+    //     .map_err(|e| format!("Parse error: {}", e))?)
+    //     .map_err(|e| format!("Listen error: {}", e))?;
+    // swarm.listen_on("/ip4/0.0.0.0/tcp/62649".parse()
+    //     .map_err(|e| format!("Parse error: {}", e))?)
+    //     .map_err(|e| format!("Listen error: {}", e))?;
 
     swarm.behaviour_mut().kademlia.set_mode(Some(Mode::Server));
 
-    if bootstrap {
-        let peer_id = &keypair.clone().public().to_peer_id();
-        tracing::info!("Node set as bootstrap with peer id {}", peer_id);
-
-        swarm.behaviour_mut().kademlia.set_mode(Some(Mode::Server));
-    } else {
+    if !bootstrap {
         if bootstrap_address.is_none() || bootstrap_peer_id.is_none() {
             return Err(Box::new(std::io::Error::new(
                 std::io::ErrorKind::Other,
@@ -122,13 +119,11 @@ pub async fn run(
         }
 
         let bootstrap_peer_id: PeerId = PeerId::from_str(bootstrap_peer_id.unwrap()).unwrap();
-        // let bootstrap_address: Multiaddr = format!("/ip4/{}/udp/62649/quic-v1", bootstrap_address.unwrap()).parse::<Multiaddr>().unwrap();
-
         let bootstrap_addr = bootstrap_address.unwrap();
         let bootstrap_address: Multiaddr = if bootstrap_addr.parse::<std::net::IpAddr>().is_ok() {
-            format!("/ip4/{}/tcp/62649", bootstrap_addr)
+            format!("/ip4/{}/udp/62649/quic-v1", bootstrap_addr)
         } else {
-            format!("/dns4/{}/tcp/62649", bootstrap_addr)
+            format!("/dns4/{}/udp/62649/quic-v1", bootstrap_addr)
         }.parse::<Multiaddr>().unwrap();
 
         // Ou version avec DNS et sous-domaines
@@ -136,11 +131,18 @@ pub async fn run(
         //     .parse::<Multiaddr>()
         //     .unwrap();
 
-        tracing::info!("Node set with bootstrap peer id {} and address {}", bootstrap_peer_id, bootstrap_address);
+        tracing::info!(
+            "Node starting with peer id {} and connecting to bootstrap node {} at {}",
+            keypair.public().to_peer_id(),
+            bootstrap_peer_id,
+            bootstrap_address,
+        );
 
+        // Add bootstrap node to routing table
         swarm.behaviour_mut()
             .kademlia.add_address(&bootstrap_peer_id, bootstrap_address.clone());
 
+        // Wait for swarm to be ready
         tokio::time::sleep(Duration::from_secs(2)).await;
 
         // Run bootstrap
@@ -150,9 +152,8 @@ pub async fn run(
         }
     }
 
-    // for testing - simulate event from blockchain
+    // ONLY for testing :: simulate event from blockchain
     // Specific peer ID that's allowed to generate events
-
     // Wrap swarm in Arc<Mutex>
     let swarm = Arc::new(Mutex::new(swarm));
     // Clone Arc for event_generation
