@@ -75,7 +75,7 @@ This project is a Rust-based decentralized bridge node designed to validate tran
 
 ## Usage
 
-> Note: For release builds, replace `cargo run -- <opt>` with `./target/release/bridge-relayer-v1 <opt>`
+> Note: Replace **cargo run -- --args** with **./target/release/validator_node --args** when you ran **cargo build --release**
 
 ### Peer ID Operations
 
