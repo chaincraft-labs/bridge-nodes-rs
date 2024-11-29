@@ -62,7 +62,7 @@ fn seed_phrase_to_bytes(seed_phrase: Option<&str>) -> Option<[u8; 32]> {
 /// # Panics
 ///
 /// This function will panic if the provided seed is invalid for generating an Ed25519 keypair.
-fn generate_keypair(secret_key_seed: Option<[u8; 32]>) -> Keypair {
+pub fn generate_keypair(secret_key_seed: Option<[u8; 32]>) -> Keypair {
     match secret_key_seed {
         Some(seed) => Keypair::ed25519_from_bytes(seed).unwrap(),
         None => Keypair::generate_ed25519(),

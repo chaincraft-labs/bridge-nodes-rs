@@ -326,6 +326,7 @@ dependencies = [
  "serde_json",
  "sha3",
  "tempfile",
+ "thiserror 2.0.3",
  "tokio",
  "tracing",
  "tracing-subscriber",
@@ -357,6 +358,9 @@ name = "bytes"
 version = "1.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9ac0150caa2ae65ca5bd83f25c7de183dea78d4d366469f148435e2acfbad0da"
+dependencies = [
+ "serde",
+]
 
 [[package]]
 name = "cc"
@@ -1528,6 +1532,7 @@ dependencies = [
  "quick-protobuf",
  "rand",
  "rw-stream-sink",
+ "serde",
  "smallvec",
  "thiserror 1.0.69",
  "tracing",
@@ -1576,6 +1581,7 @@ dependencies = [
  "quick-protobuf-codec",
  "rand",
  "regex",
+ "serde",
  "sha2",
  "smallvec",
  "tracing",
@@ -1618,6 +1624,7 @@ dependencies = [
  "multihash",
  "quick-protobuf",
  "rand",
+ "serde",
  "sha2",
  "thiserror 1.0.69",
  "tracing",
@@ -1644,6 +1651,7 @@ dependencies = [
  "quick-protobuf",
  "quick-protobuf-codec",
  "rand",
+ "serde",
  "sha2",
  "smallvec",
  "thiserror 1.0.69",
@@ -2076,6 +2084,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cc41f430805af9d1cf4adae4ed2149c759b877b01d909a1f40256188d09345d2"
 dependencies = [
  "core2",
+ "serde",
  "unsigned-varint 0.8.0",
 ]
 

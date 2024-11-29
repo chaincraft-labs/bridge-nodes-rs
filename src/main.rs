@@ -2,53 +2,44 @@ use std::error::Error;
 
 use tracing_subscriber::EnvFilter;
 use clap::Parser;
-use utils::peer_id::{generate_new_keypair_and_peer_id, generate_peer_id, DefaultUserDirectoryProvider};
+use validator_node::{node::network::Node, utils::peer_id::{generate_new_keypair_and_peer_id, generate_peer_id, DefaultUserDirectoryProvider}, NodeConfig};
 
-mod utils;
-mod nodes;
 
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
 struct Args {
-    #[arg(short = 's', long)]
+    #[arg(short = 'a', long)]
     seed_phrase: Option<String>,
 
-    #[arg(short = 'p', long)]
+    #[arg(long)]
     new_peer_id: bool,
 
-    #[arg(short = 'r', long)]
+    #[arg(long)]
     read_peer_id: bool,
 
-    #[arg(short = 'x', long)]
-    node_rdv: bool,
-
-    #[arg(short = 'y', long)]
+    #[arg(long)]
     node: bool,
 
-    #[arg(short = 'a', long)]
-    rdv_point_address: Option<String>,
-
-    #[arg(short = 'b', long)]
-    rdv_point_peer_id: Option<String>,
-
-    #[arg(short = 'c', long)]
-    external_address: Option<String>,
-
-    // kademlia
-    #[arg(short = 'k', long)]
-    node_kad: bool,
-
-    #[arg(short = 'l', long)]
+    #[arg(long)]
     bootstrap_address: Option<String>,
 
-    #[arg(short = 'm', long)]
+    #[arg(long)]
     bootstrap_peer_id: Option<String>,
 
-    #[arg(short = 'n', long)]
+    #[arg(long)]
     bootstrap: bool,
 
-    #[arg(short = '0', long)]
-    authorized_peer_id: Option<String>,
+    #[arg(long)]
+    port: Option<usize>,
+
+    #[arg(long)]
+    bootstrap_port: Option<usize>,
+
+    #[arg(long)]
+    gen_msg: bool,
+
+    #[arg(long)]
+    local_test: bool,
 }
 
 
@@ -81,38 +72,20 @@ async fn main() -> Result<(), Box<dyn Error>> {
             }
         }
     }
-    else if args.node_rdv && args.rdv_point_address.is_some() {
-        nodes::node_rdv::run(
-            args.rdv_point_address.as_deref().unwrap()
-        ).await.unwrap();
-    }
-    else if args.node_kad &&
-        args.bootstrap_peer_id.is_some() &&
-        args.bootstrap_address.is_some() {
-        nodes::node_kad::run(
-            args.bootstrap_address.as_deref(),
-            args.bootstrap_peer_id.as_deref(),
-            args.bootstrap,
-            args.authorized_peer_id.as_deref(),
-        ).await.unwrap();
-    }
-    else if args.node_kad && args.bootstrap {
-        nodes::node_kad::run(
-            None,
-            None,
-            args.bootstrap,
-            args.authorized_peer_id.as_deref(),
-        ).await.unwrap();
-    }
-    else if args.node &&
-        args.rdv_point_address.is_some() &&
-        args.rdv_point_peer_id.is_some() &&
-        args.external_address.is_some() {
-        nodes::node::run(
-            args.rdv_point_address.as_deref().unwrap(),
-            args.rdv_point_peer_id.as_deref().unwrap(),
-            args.external_address.as_deref().unwrap(),
-        ).await.unwrap();
+    else if args.node {
+        let config = NodeConfig {
+            bootstrap_address: args.bootstrap_address,
+            bootstrap_peer_id: args.bootstrap_peer_id,
+            is_bootstrap_node: args.bootstrap,
+            is_bootstrap_started: false,
+            gen_msg: args.gen_msg,
+            listen_address: "0.0.0.0".to_string(),
+            port: args.port.unwrap_or(62649) as u16,
+            bootstrap_port: args.bootstrap_port.unwrap_or(62649) as u16,
+            local_test: args.local_test,
+        };
+        let mut node = Node::new(config);
+        node.run().await?;
     }
     else {
         eprintln!("Error : --help for more information");

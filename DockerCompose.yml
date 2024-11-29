@@ -67,6 +67,34 @@ networks:
 # Démarrer les containers
 # docker compose -f DockerCompose.yml up
 
+
+# peer ids
+# --------
+# bootstrap : 12D3KooWNHVedKDEa4ChsF4zvDJQE1ps1NJjhBsJictKMwzx6vya
+# client1   : 12D3KooWRLMk7uaVWi7RsPPLvck89Rvcvk5g2kehoHNcyzkozJ1a
+# client2   : 12D3KooWMfyCBFciZzncYS2fHdiqNJ6Ba1Lv6VYq7iAPfVKPJt32
+# client3   : 12D3KooWSoor5UdaxVannUD2ga6A25TPaK2PnEWhpkCJPk783oxC
+# client4   : 12D3KooWCUAiQHaLZYDXRkHacM1mEVtRCCvbQZJ6978KyyCUjrvD
+# client5   : 12D3KooWPzeFxGTuvufCntVGbzAUof4uyQ4SpsTovZmDsK9ecrXb
+
+# bootstrap
+# exec --privileged -ti node_kdm_bootstrap /bin/bash
+# ./target/release/validator_node --new-peer-id --seed-phrase bootstrap
+# 12D3KooWNHVedKDEa4ChsF4zvDJQE1ps1NJjhBsJictKMwzx6vya
+# ./target/release/validator_node --node-kad --bootstrap --authorized-peer-id 1
+#
+# node regular sans message
+# # docker exec --privileged -ti node_kdm_client1 /bin/bash
+# ./target/release/validator_node --new-peer-id --seed-phrase client1
+# 12D3KooWRLMk7uaVWi7RsPPLvck89Rvcvk5g2kehoHNcyzkozJ1a
+# ./target/release/validator_node ./target/release/validator_node --node-kad --bootstrap-peer-id 12D3KooWNHVedKDEa4ChsF4zvDJQE1ps1NJjhBsJictKMwzx6vya --bootstrap-address <172.19.0.3> --authorized-peer-id 1
+#
+# node regular avec message
+# # docker exec --privileged -ti node_kdm_client2 /bin/bash
+# ./target/release/validator_node --new-peer-id
+# ./target/release/validator_node ./target/release/validator_node --node-kad --bootstrap-peer-id 12D3KooWNHVedKDEa4ChsF4zvDJQE1ps1NJjhBsJictKMwzx6vya --bootstrap-address <172.19.0.3> --authorized-peer-id <peer-id>
+
+
 # Ou en mode détaché
 # docker compose -f DockerCompose.yml up -d
 

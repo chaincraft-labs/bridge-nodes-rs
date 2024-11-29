@@ -98,15 +98,26 @@ This project is a Rust-based decentralized bridge node designed to validate tran
 1. Start a bootstrap node
 
     ```sh
-    ./target/release/bridge-relayer-v1 --node-kad --bootstrap --authorized-peer-id <peer id>
-    ```
+    RUST_LOG=info cargo run -- --node --bootstrap
 
-    > Note: `--authorized-peer-id` is used for testing to specify event generation permissions
+    # [optional] --port <port> (default is 62649)
+    # [optional] --local-test : Generate a random peer_id
+    # [optional] --gen-msg : Allow the node to generate messages through gossipsub (for testing)
+    ```
 
 2. Start a regular node
 
     ```sh
-    ./target/release/bridge-relayer-v1 --node-kad --bootstrap-address <ip address or hostname> --bootstrap-peer-id <peer id> --authorized-peer-id <peer id>
+    RUST_LOG=info cargo run -- --node --port <port> --bootstrap-port <port> --bootstrap-address <address> --bootstrap-peer-id <peer_id>
+
+    # Example:
+    RUST_LOG=info cargo run -- --node --port 62650 --bootstrap-port 62649 --bootstrap-address 127.0.0.1 --bootstrap-peer-id 12D3KooWMoaiPNniRnweNBobf2YfGBUzpgaYNa8VGXyqoBHLVvUR
+
+    # Start a node and generate a message
+    RUST_LOG=info cargo run -- --node --port 62650 --bootstrap-port 62649 --bootstrap-address 127.0.0.1 --bootstrap-peer-id 12D3KooWMoaiPNniRnweNBobf2YfGBUzpgaYNa8VGXyqoBHLVvUR --gen-msg
+
+    # [optional] --local-test : Generate a random peer_id
+    # [optional] --gen-msg : Allow the node to generate messages through gossipsub (for testing)
     ```
 
 ### Network Configuration

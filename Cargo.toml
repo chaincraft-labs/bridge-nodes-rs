@@ -3,15 +3,24 @@ name = "bridge-relayer-v1"
 version = "0.1.0"
 edition = "2021"
 
+[lib]
+name = "validator_node"
+path = "src/lib.rs"
+
+[[bin]]
+name = "validator_node"
+path = "src/main.rs"
+
 [dependencies]
 base64 = "0.22.1"
 clap = { version = "4.5.20", features = ["derive"] }
 directories = "5.0.1"
 futures = "0.3.31"
-libp2p = { version = "0.54.1", features = ["dns", "ed25519", "gossipsub", "identify", "kad", "macros", "noise", "ping", "quic", "rendezvous", "tcp", "tokio", "websocket", "yamux"] }
+libp2p = { version = "0.54.1", features = ["dns", "ed25519", "gossipsub", "identify", "kad", "macros", "noise", "ping", "quic", "rendezvous", "serde", "tcp", "tokio", "websocket", "yamux"] }
 serde = { version = "1.0.215", features = ["derive"] }
 serde_json = "1.0.133"
 sha3 = "0.10.8"
+thiserror = "2.0.3"
 tokio = { version = "1.41.1", features = ["full"] }
 tracing = "0.1.40"
 
