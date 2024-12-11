@@ -1,9 +1,19 @@
 use libp2p::{
-    gossipsub, identify, kad::{self, store::MemoryStore}, ping, swarm::NetworkBehaviour, Multiaddr, PeerId
+    gossipsub, identify, kad::{self, store::MemoryStore}, ping, request_response::{self, json}, swarm::NetworkBehaviour, Multiaddr, PeerId
 };
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PartialKeyRequest {
+    pub node_index: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PartialKeyResponse {
+    pub key_data: Vec<u8>,
+    pub node_index: usize,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CustomEvent {
@@ -12,8 +22,22 @@ pub struct CustomEvent {
     pub data: String,
 }
 
+impl CustomEvent {
+    pub fn new() -> Result<Self, String> {
+        Ok(Self {
+            timestamp: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_err(|e| e.to_string())?
+                .as_secs(),
+            event_type: "ExampleEvent".to_string(),
+            data: "Some event data".to_string(),
+        })
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct NodeConfig {
+    pub port: u16,
     pub bootstrap_address: Option<String>,
     pub bootstrap_port: u16,
     pub bootstrap_peer_id: Option<String>,
@@ -21,7 +45,6 @@ pub struct NodeConfig {
     pub is_bootstrap_started: bool,
     pub gen_msg: bool,
     pub listen_address: String,
-    pub port: u16,
     pub local_test: bool,
 }
 
@@ -44,6 +67,7 @@ pub struct NodeBehaviour {
     pub kademlia: kad::Behaviour<MemoryStore>,
     pub identify: identify::Behaviour,
     pub ping: ping::Behaviour,
+    pub key_exchange: json::Behaviour<PartialKeyRequest, PartialKeyResponse>,
 }
 
 #[derive(Debug)]
@@ -52,6 +76,7 @@ pub enum NodeBehaviourEvent {
     Kademlia(kad::Event),
     Identify(identify::Event),
     Ping(ping::Event),
+    KeyExchange(request_response::Event<PartialKeyRequest, PartialKeyResponse>),
 }
 
 
@@ -79,6 +104,12 @@ impl From<ping::Event> for NodeBehaviourEvent {
     }
 }
 
+
+impl From<request_response::Event<PartialKeyRequest, PartialKeyResponse>> for NodeBehaviourEvent {
+    fn from(event: request_response::Event<PartialKeyRequest, PartialKeyResponse>) -> Self {
+        NodeBehaviourEvent::KeyExchange(event)
+    }
+}
 
 #[derive(Debug, thiserror::Error)]
 pub enum NodeError {

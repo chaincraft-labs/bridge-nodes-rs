@@ -1,28 +1,28 @@
-FROM ubuntu:22.04
+FROM rust:1.83-slim-bullseye AS builder
 
-RUN apt-get update -y && \
-    apt-get upgrade -y && \
-    apt-get install -y curl git vim build-essential \
-    openssh-server nano net-tools netcat && \
-    rm -rf /var/lib/apt/lists/* /var/cache/apt/archives/*
+WORKDIR /app/bridge-nodes-rs
 
-RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y && \
-    echo "source $HOME/.cargo/env" >> /root/.bashrc && \
-    . "$HOME/.cargo/env"
+COPY Cargo.toml Cargo.lock ./
 
-ENV PATH="/root/.cargo/bin:${PATH}"
-
-RUN mkdir -p /usr/src/app/bridge-nodes-rs
-
-COPY . /usr/src/app/bridge-nodes-rs
-
-WORKDIR /usr/src/app/bridge-nodes-rs
+COPY src ./src
 
 RUN cargo build --release
 
+FROM debian:bookworm-slim
+
+RUN apt-get update -y && \
+    apt-get install -y --no-install-recommends \
+    openssh-server \
+    net-tools \
+    curl \
+    && rm -rf /var/lib/apt/lists/* /var/cache/apt/archives/*
+
+WORKDIR /app/bridge-nodes-rs
+
+COPY --from=builder /app/bridge-nodes-rs/target/release/validator_node .
+
 RUN echo "PS1='[\u@\h \$(hostname -I | awk '\''{print \$1}'\'') \W]\$ '" >> /root/.bashrc
 
-# @dev this container will listen to these ports
 EXPOSE 62649/udp
 EXPOSE 62649
 
