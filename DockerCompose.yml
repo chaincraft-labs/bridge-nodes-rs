@@ -1,70 +1,81 @@
+networks:
+  bridge:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.21.0.0/16
+
 services:
   bootstrap:
-    image: bridge-validator-node:latest
+    image: libp2p-node:latest
     container_name: node_kdm_bootstrap
     ports:
       - "62649:62649/udp"
       - "62649:62649"
     networks:
-      - bridge
+      bridge:
+        ipv4_address: 172.21.0.2
     restart: unless-stopped
 
   client1:
-    image: bridge-validator-node:latest
+    image: libp2p-node:latest
     container_name: node_kdm_client1
     ports:
       - "62650:62649/udp"
       - "62650:62649"
     networks:
-      - bridge
+      bridge:
+        ipv4_address: 172.21.0.3
+
   client2:
-    image: bridge-validator-node:latest
+    image: libp2p-node:latest
     container_name: node_kdm_client2
     ports:
       - "62651:62649/udp"
       - "62651:62649"
     networks:
-      - bridge
+      bridge:
+        ipv4_address: 172.21.0.4
 
   client3:
-    image: bridge-validator-node:latest
+    image: libp2p-node:latest
     container_name: node_kdm_client3
     ports:
       - "62652:62649/udp"
       - "62652:62649"
     networks:
-      - bridge
+      bridge:
+        ipv4_address: 172.21.0.5
 
   client4:
-    image: bridge-validator-node:latest
+    image: libp2p-node:latest
     container_name: node_kdm_client4
     ports:
       - "62653:62649/udp"
       - "62653:62649"
     networks:
-      - bridge
+      bridge:
+        ipv4_address: 172.21.0.6
 
   client5:
-    image: bridge-validator-node:latest
+    image: libp2p-node:latest
     container_name: node_kdm_client5
     ports:
       - "62654:62649/udp"
       - "62654:62649"
     networks:
-      - bridge
+      bridge:
+        ipv4_address: 172.21.0.7
 
-networks:
-  bridge:
-  external:
-    name: bridge
+
 
 # Clean up
 # docker system prune -f
 
-# Construire l'image une seule fois
-# docker build -t bridge-validator-node:latest .
+# Build image
+# docker build -t libp2p-node:latest .
 
-# Démarrer les containers
+# Start containers
 # docker compose -f DockerCompose.yml up
 
 
@@ -78,25 +89,10 @@ networks:
 # client5   : 12D3KooWPzeFxGTuvufCntVGbzAUof4uyQ4SpsTovZmDsK9ecrXb
 
 # bootstrap
-# exec --privileged -ti node_kdm_bootstrap /bin/bash
-# ./target/release/validator_node --new-peer-id --seed-phrase bootstrap
-# 12D3KooWNHVedKDEa4ChsF4zvDJQE1ps1NJjhBsJictKMwzx6vya
-# ./target/release/validator_node --node-kad --bootstrap --authorized-peer-id 1
-#
-# node regular sans message
-# # docker exec --privileged -ti node_kdm_client1 /bin/bash
-# ./target/release/validator_node --new-peer-id --seed-phrase client1
-# 12D3KooWRLMk7uaVWi7RsPPLvck89Rvcvk5g2kehoHNcyzkozJ1a
-# ./target/release/validator_node ./target/release/validator_node --node-kad --bootstrap-peer-id 12D3KooWNHVedKDEa4ChsF4zvDJQE1ps1NJjhBsJictKMwzx6vya --bootstrap-address <172.19.0.3> --authorized-peer-id 1
-#
-# node regular avec message
-# # docker exec --privileged -ti node_kdm_client2 /bin/bash
-# ./target/release/validator_node --new-peer-id
-# ./target/release/validator_node ./target/release/validator_node --node-kad --bootstrap-peer-id 12D3KooWNHVedKDEa4ChsF4zvDJQE1ps1NJjhBsJictKMwzx6vya --bootstrap-address <172.19.0.3> --authorized-peer-id <peer-id>
+# docker exec -it node_kdm_bootstrap /bin/bash
 
-
-# Ou en mode détaché
-# docker compose -f DockerCompose.yml up -d
+# Validator
+# docker exec -it node_kdm_client1 /bin/bash
 
 # ----------------------------------------------
 # Build images without cache
@@ -107,7 +103,7 @@ networks:
 # ---------------------
 # docker compose -f DockerCompose.yml up
 
-# Start un seul conteneur
+# Start only a specific container
 # ------------------------
 # docker compose -f DockerCompose.yml up node_kdm_bootstrap
 
