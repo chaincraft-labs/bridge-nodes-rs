@@ -1,0 +1,15 @@
+[relayer]
+bootstrap_peer_ids = [
+  "12D3KooWN6k7tSYaMS8XUExgNYN72TzAwtwNVr6ZacDYdpSfaUpd",
+  "12D3KooWNvpDfuycDAGHYerPVtViJXLhV2SZvYQAKQDbLUdTDV16",
+]
+
+bootstrap_nodes = [
+  "/ip4/127.0.0.1/udp/62649/quic-v1/p2p/12D3KooWN6k7tSYaMS8XUExgNYN72TzAwtwNVr6ZacDYdpSfaUpd",
+  "/ip4/127.0.0.1/udp/62650/quic-v1/p2p/12D3KooWNvpDfuycDAGHYerPVtViJXLhV2SZvYQAKQDbLUdTDV16",
+]
+
+[validator]
+address = "127.0.0.1"
+port = 62651
+peer_id = "12D3KooWKpXWhPYWxAmWhHiEWF2GDew2tAF1hLdnjBwjcTM8HACx"

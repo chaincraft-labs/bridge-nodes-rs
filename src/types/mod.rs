@@ -123,7 +123,7 @@ pub enum NodeError {
     #[error("Network error: {0}")]
     NetworkError(String),
 
-    #[error("Peer error: {0}")]
+    #[error("Peer {0} unauthorized")]
     PeerError(String),
 
     #[error("Bootstrap error: {0}")]

@@ -8,6 +8,7 @@ use tracing::{error, info};
 
 use super::common::{BaseNode, NodeCommon};
 use crate::rpc::start_rpc_server;
+use crate::utils::auth::{AuthorizedPeersTree, MerkleProof};
 use crate::{
     types::{NodeBehaviourEvent, NodeConfig, NodeError, NodeMetrics, NodeState},
     NodeBehaviour,

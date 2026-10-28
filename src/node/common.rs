@@ -21,6 +21,10 @@ use crate::utils::peer_id::{
 
 const KEY_EXCHANGE_PROTOCOL: &str = "/key-exchange/1.0.0";
 
+struct AuthorizedPeers {
+    peer_id: PeerId,
+}
+
 // Trait that defines common behavior for all node types
 pub trait NodeCommon {
     fn get_config(&self) -> &NodeConfig;
@@ -42,15 +46,36 @@ pub struct BaseNode {
 
 impl BaseNode {
     pub fn new(config: NodeConfig) -> Self {
-        let user_dir_provider = DefaultUserDirectoryProvider;
-
         Self {
             config,
             state: NodeState::Starting,
             metrics: NodeMetrics::default(),
             swarm: None,
-            keypair: read_keypair_from_file(&user_dir_provider).ok(),
+            keypair: None,
         }
+    }
+
+    pub async fn authorize_peer(&self) -> Result<(), NodeError> {
+        let authorized_peers: Vec<AuthorizedPeers> = vec![
+            AuthorizedPeers {
+                peer_id: PeerId::from_str("12D3KooWSFDZvshsJQ75hGjsx2MYEdjDEd1K7RaS1X5UKKZDc1kT")
+                    .unwrap(),
+            },
+            AuthorizedPeers {
+                peer_id: PeerId::from_str("12D3KooWAPWpdc7AWArNdQyag5qZKHi1mQSnAdupc2ejJ1ghMhhn")
+                    .unwrap(),
+            },
+        ];
+
+        let peer_id = PeerId::from_public_key(&self.keypair.clone().unwrap().public());
+
+        for authorized_peer in authorized_peers {
+            if authorized_peer.peer_id == peer_id {
+                return Ok(());
+            }
+        }
+
+        Err(NodeError::PeerError(peer_id.to_string()))
     }
 
     // Common network setup methods
@@ -82,26 +107,25 @@ impl BaseNode {
         config
     }
 
-    pub fn get_keypair_for_network(&self) -> Keypair {
+    pub fn get_keypair_for_network(&mut self) -> Keypair {
         if self.config.local_test {
             generate_keypair(None)
         } else {
-            // If we don't have a keypair from file, generate a new one
+            let user_dir_provider = DefaultUserDirectoryProvider;
+            self.keypair = read_keypair_from_file(&user_dir_provider).ok();
+
             self.keypair.clone().unwrap_or_else(|| {
                 warn!("No keypair found in file, generating new one");
                 generate_keypair(None)
             })
         }
-        // if self.config.local_test {
-        //     generate_keypair(None)
-        // } else {
-        //     self.keypair.clone().unwrap()
-        // }
     }
 
     // Common initialization methods
     pub async fn init_swarm(&mut self) -> Result<(), NodeError> {
         let keypair = &self.get_keypair_for_network();
+        self.keypair = Some(keypair.clone());
+
         let gossipsub_config = Self::configure_gossipsub()?;
         let kademlia_config = Self::configure_kademlia();
         let request_response_config =
@@ -159,6 +183,7 @@ impl BaseNode {
             return Ok(());
         }
 
+        // Only for validator nodes
         let bootstrap_peer_id =
             PeerId::from_str(self.config.bootstrap_peer_id.as_ref().unwrap())
                 .map_err(|_| NodeError::ConfigError("Missing bootstrap peer ID".to_string()))?;
@@ -325,10 +350,10 @@ impl BaseNode {
                         swarm.lock().await;
                     let behaviour = _swarm.behaviour_mut();
                     let remote_addr = endpoint.get_remote_address().clone();
-
                     let addr = format!("{}/p2p/{}", remote_addr, peer_id)
                         .parse::<Multiaddr>()
                         .unwrap();
+
                     info!("Add peer ID to Kademlia: {}, Address: {}", peer_id, addr);
                     behaviour.kademlia.add_address(&peer_id, addr);
 

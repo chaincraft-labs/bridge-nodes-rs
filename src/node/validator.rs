@@ -6,6 +6,7 @@ use tokio::sync::Mutex;
 use tracing::{error, info};
 
 use super::common::{BaseNode, NodeCommon};
+use crate::utils::auth::{AuthorizedPeersTree, MerkleProof};
 use crate::{
     types::{NodeBehaviourEvent, NodeConfig, NodeError},
     CustomEvent, NodeBehaviour, NodeMetrics, NodeState,
@@ -209,6 +210,13 @@ impl ValidatorNode {
     pub async fn run(&mut self) -> Result<(), NodeError> {
         info!("🔶 Validator node");
         self.base.init_swarm().await?;
+
+        // if let Err(e) = self.base.authorize_peer().await {
+        //     error!("Authorization failed: {}", e);
+        //     eprintln!("Error: Authorization failed: {}", e);
+        //     std::process::exit(1);
+        // }
+
         self.base.init_network_listener().await?;
         self.base.connect_to_bootstrap().await?;
         self.base.state = NodeState::Connected;
