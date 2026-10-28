@@ -175,7 +175,7 @@ impl ValidatorNode {
     }
 
     // async fn store_partial_key(&mut self, response: PartialKeyResponse) {
-    //     // Implémenter le stockage sécurisé de la clé partielle
+    //     // Store the partial key securely
     //     info!("Storing partial key {}", response.node_index);
     // }
 

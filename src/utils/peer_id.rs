@@ -127,7 +127,7 @@ fn save_keypair<T: UserDirectoryProvider>(
 /// # Arguments
 ///
 /// * `provider` - An implementation of `UserDirectoryProvider` that provides the path to
-/// the user's home directory.
+///   the user's home directory.
 ///
 /// # Returns
 ///
@@ -324,11 +324,10 @@ mod tests {
         // Check that the content of the key file is correct
         let encoded_keypair_pbuf = keypair
             .to_protobuf_encoding()
-            .expect("Échec de l'encodage protobuf");
+            .expect("Failed to encode keypair as protobuf");
         let expected_encoded_keypair = STANDARD.encode(&encoded_keypair_pbuf);
 
-        let saved_content =
-            fs::read_to_string(file_path).expect("Échec de la lecture du fichier de clé");
+        let saved_content = fs::read_to_string(file_path).expect("Failed to read the keypair file");
         assert_eq!(
             saved_content, expected_encoded_keypair,
             "The contents of the key file do not match."
@@ -340,12 +339,12 @@ mod tests {
         let seed_phrase = Some("test_seed_phrase");
         let provider: MockUserDirectoryProvider = MockUserDirectoryProvider::new();
 
-        let result = generate_new_keypair_and_peer_id(seed_phrase.as_deref(), &provider);
+        let result = generate_new_keypair_and_peer_id(seed_phrase, &provider);
 
         match result {
             Ok(peer_id) => {
                 // Verify that a PeerId is generated
-                assert!(peer_id.to_base58().len() > 0);
+                assert!(!peer_id.to_base58().is_empty());
                 println!("Generated Peer ID with seed: {}", peer_id);
             }
             Err(e) => panic!("Expected PeerId, got error: {}", e),
@@ -362,7 +361,7 @@ mod tests {
         match result {
             Ok(peer_id) => {
                 // Verify that a PeerId is generated
-                assert!(peer_id.to_base58().len() > 0);
+                assert!(!peer_id.to_base58().is_empty());
                 println!("Generated Peer ID without seed: {}", peer_id);
             }
             Err(e) => panic!("Expected PeerId, got error: {}", e),

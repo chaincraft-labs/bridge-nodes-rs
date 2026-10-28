@@ -159,8 +159,9 @@ impl BaseNode {
             return Ok(());
         }
 
-        let bootstrap_peer_id = PeerId::from_str(&self.config.bootstrap_peer_id.as_ref().unwrap())
-            .map_err(|_| NodeError::ConfigError("Missing bootstrap peer ID".to_string()))?;
+        let bootstrap_peer_id =
+            PeerId::from_str(self.config.bootstrap_peer_id.as_ref().unwrap())
+                .map_err(|_| NodeError::ConfigError("Missing bootstrap peer ID".to_string()))?;
 
         let bootstrap_addr = if let Some(addr) = &self.config.bootstrap_address {
             if addr.parse::<std::net::IpAddr>().is_ok() {

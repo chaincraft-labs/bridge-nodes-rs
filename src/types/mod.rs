@@ -73,6 +73,9 @@ pub struct NodeBehaviour {
     pub key_exchange: json::Behaviour<PartialKeyRequest, PartialKeyResponse>,
 }
 
+// Boxing the large variants would break the nested patterns the node event
+// loops match on (`NodeBehaviourEvent::Gossipsub(gossipsub::Event::Message { .. })`).
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug)]
 pub enum NodeBehaviourEvent {
     Gossipsub(gossipsub::Event),
