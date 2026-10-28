@@ -106,6 +106,7 @@ impl RelayerNode {
                     request_response::Event::Message {
                         peer,
                         message,
+                        ..
                     } => match message {
                         request_response::Message::Request {
                             request_id,
@@ -145,6 +146,7 @@ impl RelayerNode {
                     request_response::Event::ResponseSent {
                         peer,
                         request_id,
+                        ..
                     } => {
                         info!(
                             "Successfully sent key to validator {}, request_id: {}",

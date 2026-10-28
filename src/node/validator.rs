@@ -60,7 +60,7 @@ impl ValidatorNode {
 
     async fn handle_key_exchange_event(&mut self, event: request_response::Event<PartialKeyRequest, PartialKeyResponse>) {
         match event {
-            request_response::Event::Message { peer, message } => {
+            request_response::Event::Message { peer, message, .. } => {
                 match message {
                     request_response::Message::Request {
                         request_id,
@@ -97,7 +97,7 @@ impl ValidatorNode {
             request_response::Event::InboundFailure { peer, error, .. } => {
                 error!("Failed to receive request from relayer {}: {:?}", peer, error);
             }
-            request_response::Event::ResponseSent { peer, request_id } => {
+            request_response::Event::ResponseSent { peer, request_id, .. } => {
                 info!("Successfully sent response to relayer {} for request {}", peer, request_id);
             }
         }
