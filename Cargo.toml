@@ -14,7 +14,7 @@ path = "src/main.rs"
 [dependencies]
 base64 = "0.23"
 clap = { version = "4.5.20", features = ["derive"] }
-directories = "5.0.1"
+directories = "6"
 futures = "0.3.31"
 jsonrpsee = { version = "0.24.7", features = ["client", "macros", "server"] }
 libp2p = { version = "0.54.1", features = ["dns", "ed25519", "gossipsub", "identify", "json", "kad", "macros", "noise", "ping", "quic", "rendezvous", "request-response", "serde", "tcp", "tokio", "websocket", "yamux"] }
