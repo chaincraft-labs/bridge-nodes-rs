@@ -1,16 +1,18 @@
 use futures::StreamExt;
-use libp2p::{request_response, swarm::SwarmEvent};
-use libp2p::{gossipsub, PeerId};
 use libp2p::identity::Keypair;
-use tokio::sync::Mutex;
+use libp2p::{gossipsub, PeerId};
+use libp2p::{request_response, swarm::SwarmEvent};
 use std::sync::Arc;
+use tokio::sync::Mutex;
 use tracing::{error, info};
 
 use super::common::{BaseNode, NodeCommon};
 use crate::rpc::start_rpc_server;
+use crate::{
+    types::{NodeBehaviourEvent, NodeConfig, NodeError, NodeMetrics, NodeState},
+    NodeBehaviour,
+};
 use crate::{PartialKeyRequest, PartialKeyResponse};
-use crate::{types::{NodeBehaviourEvent, NodeConfig, NodeError, NodeMetrics, NodeState}, NodeBehaviour};
-
 
 #[derive(Clone)]
 pub struct RelayerNode {
@@ -42,18 +44,24 @@ impl NodeCommon for RelayerNode {
 impl RelayerNode {
     pub fn new(config: NodeConfig) -> Self {
         Self {
-            base: BaseNode::new(config)
+            base: BaseNode::new(config),
         }
     }
 
     async fn init_gossipsub_topic(&mut self) -> Result<gossipsub::IdentTopic, NodeError> {
         let topic = gossipsub::IdentTopic::new("custom_events");
 
-        let swarm = self.base.swarm.as_ref()
+        let swarm = self
+            .base
+            .swarm
+            .as_ref()
             .ok_or(NodeError::SwarmNotInitialized)?;
         let mut swarm = swarm.lock().await;
 
-        swarm.behaviour_mut().gossipsub.subscribe(&topic)
+        swarm
+            .behaviour_mut()
+            .gossipsub
+            .subscribe(&topic)
             .map_err(|e| NodeError::ConfigError(e.to_string()))?;
 
         info!("Subscribed to topic: {}", topic);
@@ -62,24 +70,27 @@ impl RelayerNode {
     }
 
     pub async fn distribute_keys(&mut self, peers: Vec<PeerId>) -> Result<(), NodeError> {
-
         for (index, peer_id) in peers.iter().enumerate() {
-
-            let swarm = self.base.swarm.as_ref()
+            let swarm = self
+                .base
+                .swarm
+                .as_ref()
                 .ok_or(NodeError::SwarmNotInitialized)?;
 
             let mut swarm = swarm.lock().await;
             if !swarm.is_connected(peer_id) {
-                return Err(NodeError::PeerError(
-                    format!("Peer {} not connected. Ensure peer is connected before distributing keys", peer_id)
-                ));
+                return Err(NodeError::PeerError(format!(
+                    "Peer {} not connected. Ensure peer is connected before distributing keys",
+                    peer_id
+                )));
             }
 
-            let request = PartialKeyRequest {
-                node_index: index,
-            };
+            let request = PartialKeyRequest { node_index: index };
 
-            swarm.behaviour_mut().key_exchange.send_request(peer_id, request);
+            swarm
+                .behaviour_mut()
+                .key_exchange
+                .send_request(peer_id, request);
         }
 
         Ok(())
@@ -103,24 +114,26 @@ impl RelayerNode {
 
             SwarmEvent::Behaviour(NodeBehaviourEvent::KeyExchange(event)) => {
                 match event {
-                    request_response::Event::Message {
-                        peer,
-                        message,
-                        ..
-                    } => match message {
+                    request_response::Event::Message { peer, message, .. } => match message {
                         request_response::Message::Request {
                             request_id,
                             request,
                             channel,
                         } => {
-                            info!("Relayer received request from {} with id {} for index {}", peer, request_id, request.node_index);
+                            info!(
+                                "Relayer received request from {} with id {} for index {}",
+                                peer, request_id, request.node_index
+                            );
                             if let Some(swarm) = &self.base.swarm {
                                 let mut swarm = swarm.lock().await;
                                 let response = PartialKeyResponse {
                                     key_data: vec![],
                                     node_index: request.node_index,
                                 };
-                                let _ = swarm.behaviour_mut().key_exchange.send_response(channel, response);
+                                let _ = swarm
+                                    .behaviour_mut()
+                                    .key_exchange
+                                    .send_response(channel, response);
                             }
                         }
                         // Relayer should not receive responses
@@ -128,25 +141,25 @@ impl RelayerNode {
                             request_id,
                             response,
                         } => {
-                            info!("Relayer received response from {} with id {} response {:?}", peer, request_id, response);
+                            info!(
+                                "Relayer received response from {} with id {} response {:?}",
+                                peer, request_id, response
+                            );
                         }
                     },
-                    request_response::Event::OutboundFailure {
-                        peer,
-                        error,
-                        ..
-                    } => {
-                        error!("OutboundFailure => Failed to send key to validator {}: {:?}", peer, error);
+                    request_response::Event::OutboundFailure { peer, error, .. } => {
+                        error!(
+                            "OutboundFailure => Failed to send key to validator {}: {:?}",
+                            peer, error
+                        );
                         // Error while sending message
                         // Retry here
-                    },
-                    request_response::Event::InboundFailure {..} => {
+                    }
+                    request_response::Event::InboundFailure { .. } => {
                         // Ignore because the relayer should not receive requests
-                    },
+                    }
                     request_response::Event::ResponseSent {
-                        peer,
-                        request_id,
-                        ..
+                        peer, request_id, ..
                     } => {
                         info!(
                             "Successfully sent key to validator {}, request_id: {}",
@@ -177,8 +190,12 @@ impl RelayerNode {
         let relayer = Arc::new(Mutex::new(self.clone()));
         let _rpc_handle = start_rpc_server(relayer, rpc_addr).await?;
 
-        let swarm = Arc::clone(self.base.swarm.as_ref()
-            .expect("Swarm should be initialized"));
+        let swarm = Arc::clone(
+            self.base
+                .swarm
+                .as_ref()
+                .expect("Swarm should be initialized"),
+        );
 
         while self.base.state != NodeState::Disconnected {
             let event = {

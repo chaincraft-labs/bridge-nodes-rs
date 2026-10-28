@@ -1,6 +1,6 @@
-pub mod utils;
 pub mod node;
-pub mod types;
 pub mod rpc;
+pub mod types;
+pub mod utils;
 
 pub use types::*;

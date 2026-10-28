@@ -1,5 +1,10 @@
 use libp2p::{
-    gossipsub, identify, kad::{self, store::MemoryStore}, ping, request_response::{self, json}, swarm::NetworkBehaviour, Multiaddr, PeerId
+    gossipsub, identify,
+    kad::{self, store::MemoryStore},
+    ping,
+    request_response::{self, json},
+    swarm::NetworkBehaviour,
+    Multiaddr, PeerId,
 };
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
@@ -48,7 +53,6 @@ pub struct NodeConfig {
     pub local_test: bool,
 }
 
-
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum NodeState {
     Starting,
@@ -57,7 +61,6 @@ pub enum NodeState {
     Disconnected,
     Error(String),
 }
-
 
 #[derive(NetworkBehaviour)]
 #[behaviour(event_process = false)]
@@ -78,7 +81,6 @@ pub enum NodeBehaviourEvent {
     Ping(ping::Event),
     KeyExchange(request_response::Event<PartialKeyRequest, PartialKeyResponse>),
 }
-
 
 impl From<gossipsub::Event> for NodeBehaviourEvent {
     fn from(event: gossipsub::Event) -> Self {
@@ -103,7 +105,6 @@ impl From<ping::Event> for NodeBehaviourEvent {
         NodeBehaviourEvent::Ping(event)
     }
 }
-
 
 impl From<request_response::Event<PartialKeyRequest, PartialKeyResponse>> for NodeBehaviourEvent {
     fn from(event: request_response::Event<PartialKeyRequest, PartialKeyResponse>) -> Self {
@@ -159,7 +160,6 @@ pub enum NodeError {
     DialError(String),
 }
 
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum NetworkMessage {
     Event(CustomEvent),
@@ -183,7 +183,6 @@ pub struct StatusMessage {
     pub state: NodeState,
 }
 
-
 #[derive(Debug, Clone, Default)]
 pub struct NodeMetrics {
     pub messages_received: u64,
@@ -193,14 +192,12 @@ pub struct NodeMetrics {
     pub last_event_timestamp: Option<u64>,
 }
 
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StorageConfig {
     pub storage_path: String,
     pub max_events: usize,
     pub retention_period: Duration,
 }
-
 
 #[derive(Debug, Clone)]
 pub struct PeerInfo {
@@ -217,4 +214,3 @@ pub enum PeerConnectionStatus {
     Banned,
     Unknown,
 }
-
