@@ -1,4 +1,4 @@
-FROM rust:1.83-slim-bullseye AS builder
+FROM rust:1.99-slim-bookworm AS builder
 
 WORKDIR /app/bridge-nodes-rs
 
