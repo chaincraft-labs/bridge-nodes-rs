@@ -367,4 +367,52 @@ mod tests {
             Err(e) => panic!("Expected PeerId, got error: {}", e),
         }
     }
+
+    // Node identities are derived from seed phrases and stored on disk: a
+    // dependency upgrade must neither change the peer ID a seed yields nor the
+    // format of `keypair.key`, or every deployed node changes identity.
+    const RELAYER_TEST_PEER_ID: &str = "12D3KooWAPWpdc7AWArNdQyag5qZKHi1mQSnAdupc2ejJ1ghMhhn";
+    const VALIDATOR_TEST_PEER_ID: &str = "12D3KooWDgCeJ15KaPzEEhV8XJd1xoN7hYBBVLdx8tBPiDgA5Lfo";
+    // `keypair.key` as written for the public test seed `relayer_test`.
+    const RELAYER_TEST_KEYPAIR_FILE: &str =
+        "CAESQFn9lxQL5dNzI9yBubU2u0xB8nlEZ+bOlPp7BfRhdygyCH3zcNtIkTmw0agc8xN+tNzKVjeTRnZ7hA8H249GQl0=";
+
+    #[test]
+    fn test_seed_phrase_yields_a_stable_peer_id() {
+        for (seed_phrase, expected) in [
+            ("relayer_test", RELAYER_TEST_PEER_ID),
+            ("validator_test", VALIDATOR_TEST_PEER_ID),
+        ] {
+            let provider = MockUserDirectoryProvider::new();
+            let peer_id = generate_new_keypair_and_peer_id(Some(seed_phrase), &provider)
+                .expect("Failed to generate the peer ID");
+            assert_eq!(peer_id.to_base58(), expected, "seed phrase {seed_phrase}");
+        }
+    }
+
+    #[test]
+    fn test_keypair_file_format_is_stable() {
+        let provider = MockUserDirectoryProvider::new();
+        generate_new_keypair_and_peer_id(Some("relayer_test"), &provider)
+            .expect("Failed to generate the peer ID");
+        let file_path = DEFAULT_PATH
+            .iter()
+            .fold(provider.get_temp_dir_path(), |path, component| {
+                path.join(component)
+            });
+        let saved_content = fs::read_to_string(file_path).expect("Failed to read the keypair file");
+        assert_eq!(saved_content, RELAYER_TEST_KEYPAIR_FILE);
+    }
+
+    #[test]
+    fn test_existing_keypair_file_is_read_back() {
+        let provider = MockUserDirectoryProvider::new();
+        let dir = provider.get_temp_dir_path().join(DEFAULT_PATH[0]);
+        fs::create_dir_all(&dir).expect("Failed to create the keypair directory");
+        fs::write(dir.join(DEFAULT_PATH[1]), RELAYER_TEST_KEYPAIR_FILE)
+            .expect("Failed to write the keypair file");
+
+        let peer_id = generate_peer_id(&provider).expect("Failed to read the peer ID");
+        assert_eq!(peer_id.to_base58(), RELAYER_TEST_PEER_ID);
+    }
 }
