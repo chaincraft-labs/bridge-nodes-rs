@@ -1,9 +1,14 @@
 use std::error::Error;
 
-use tracing_subscriber::EnvFilter;
 use clap::Parser;
-use validator_node::{node::{relayer::RelayerNode, validator::ValidatorNode}, utils::peer_id::{generate_new_keypair_and_peer_id, generate_peer_id, DefaultUserDirectoryProvider}, NodeConfig};
-
+use tracing_subscriber::EnvFilter;
+use validator_node::{
+    node::{relayer::RelayerNode, validator::ValidatorNode},
+    utils::peer_id::{
+        generate_new_keypair_and_peer_id, generate_peer_id, DefaultUserDirectoryProvider,
+    },
+    NodeConfig,
+};
 
 #[derive(Parser, Debug)]
 #[command(
@@ -239,7 +244,6 @@ Examples:
     local_test: bool,
 }
 
-
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
     let _ = tracing_subscriber::fmt()
@@ -249,7 +253,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let args = Args::parse();
     let user_dir_provider = DefaultUserDirectoryProvider;
 
-    if args.new_peer_id && ! args.read_peer_id {
+    if args.new_peer_id && !args.read_peer_id {
         match generate_new_keypair_and_peer_id(args.seed_phrase.as_deref(), &user_dir_provider) {
             Ok(peer_id) => {
                 println!("Peer ID : {}", peer_id);
@@ -258,8 +262,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 eprintln!("Error generating Peer ID : {}", e);
             }
         }
-    }
-    else if args.read_peer_id {
+    } else if args.read_peer_id {
         match generate_peer_id(&user_dir_provider) {
             Ok(peer_id) => {
                 println!("Peer ID : {}", peer_id);
@@ -268,8 +271,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 eprintln!("Error reading Peer ID : {}", e);
             }
         }
-    }
-    else if args.validator {
+    } else if args.validator {
         const DEFAULT_PORT: u16 = 62650;
         let config = NodeConfig {
             listen_address: args.listen_address.unwrap_or("0.0.0.0".to_string()),
@@ -284,8 +286,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         };
         let mut node = ValidatorNode::new(config);
         node.run().await?;
-    }
-    else if args.relayer {
+    } else if args.relayer {
         const DEFAULT_PORT: u16 = 62649;
         let config = NodeConfig {
             listen_address: args.listen_address.unwrap_or("0.0.0.0".to_string()),
@@ -300,8 +301,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         };
         let mut node = RelayerNode::new(config);
         node.run().await?;
-    }
-    else {
+    } else {
         eprintln!("Error : --help for more information");
     }
 

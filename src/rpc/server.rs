@@ -1,17 +1,17 @@
-use std::sync::Arc;
-use std::str::FromStr;
 use jsonrpsee::{
     core::{async_trait, RpcResult},
     proc_macros::rpc,
     server::{ServerBuilder, ServerHandle},
 };
 use libp2p::PeerId;
+use std::str::FromStr;
+use std::sync::Arc;
 use tokio::sync::Mutex;
 use tracing::info;
 
+use super::types::RpcError;
 use crate::node::relayer::RelayerNode;
 use crate::types::NodeError;
-use super::types::RpcError;
 
 #[rpc(server, client)]
 pub trait RpcApi {
@@ -25,7 +25,8 @@ pub struct RpcServerImpl {
 
 #[async_trait]
 impl RpcApiServer for RpcServerImpl {
-    async fn distribute_keys(&self, peer_ids: Vec<String>) -> RpcResult<String> { // Et ici
+    async fn distribute_keys(&self, peer_ids: Vec<String>) -> RpcResult<String> {
+        // Et ici
 
         let peer_ids = peer_ids
             .iter()
@@ -39,17 +40,16 @@ impl RpcApiServer for RpcServerImpl {
         let mut relayer = self.relayer.lock().await;
 
         match relayer.distribute_keys(peer_ids).await {
-            Ok(_) => {
-                Ok("Key distribution started successfully".to_string())
-            }
-            Err(e) => {
-                Err(RpcError::DistributionFailed(e.to_string()).into())
-            }
+            Ok(_) => Ok("Key distribution started successfully".to_string()),
+            Err(e) => Err(RpcError::DistributionFailed(e.to_string()).into()),
         }
     }
 }
 
-pub async fn start_rpc_server(relayer: Arc<Mutex<RelayerNode>>, addr: &str) -> Result<ServerHandle, NodeError> {
+pub async fn start_rpc_server(
+    relayer: Arc<Mutex<RelayerNode>>,
+    addr: &str,
+) -> Result<ServerHandle, NodeError> {
     let server = ServerBuilder::default()
         .build(addr)
         .await

@@ -139,7 +139,3 @@ Contributions are welcome! For major changes:
 4. Submit a Pull Request
 
 Please ensure to update tests as appropriate.
-
-## License
-
-This project is licensed under the MIT License. See the LICENSE file for details.

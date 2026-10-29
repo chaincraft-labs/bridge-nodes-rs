@@ -1,5 +1,5 @@
-use serde::{Deserialize, Serialize};
 use jsonrpsee::types::error::ErrorObject;
+use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct DistributeKeysParams {
@@ -20,10 +20,6 @@ pub enum RpcError {
 
 impl From<RpcError> for ErrorObject<'static> {
     fn from(err: RpcError) -> Self {
-        ErrorObject::owned(
-            1,
-            err.to_string(),
-            None::<()>
-        )
+        ErrorObject::owned(1, err.to_string(), None::<()>)
     }
 }

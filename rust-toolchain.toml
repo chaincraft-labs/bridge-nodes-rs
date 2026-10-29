@@ -1,0 +1,4 @@
+# Keep in step with the builder image in `Dockerfile` (rust:1.99).
+[toolchain]
+channel = "1.99"
+components = ["rustfmt", "clippy"]

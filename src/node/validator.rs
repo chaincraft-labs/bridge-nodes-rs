@@ -1,13 +1,16 @@
 use futures::StreamExt;
-use libp2p::{identity::Keypair, swarm::SwarmEvent};
 use libp2p::{gossipsub, request_response};
-use tokio::sync::Mutex;
+use libp2p::{identity::Keypair, swarm::SwarmEvent};
 use std::{sync::Arc, time::Duration};
+use tokio::sync::Mutex;
 use tracing::{error, info};
 
 use super::common::{BaseNode, NodeCommon};
+use crate::{
+    types::{NodeBehaviourEvent, NodeConfig, NodeError},
+    CustomEvent, NodeBehaviour, NodeMetrics, NodeState,
+};
 use crate::{PartialKeyRequest, PartialKeyResponse};
-use crate::{types::{NodeBehaviourEvent, NodeConfig, NodeError}, CustomEvent, NodeBehaviour, NodeMetrics, NodeState};
 
 #[derive(Clone)]
 pub struct ValidatorNode {
@@ -39,18 +42,24 @@ impl NodeCommon for ValidatorNode {
 impl ValidatorNode {
     pub fn new(config: NodeConfig) -> Self {
         Self {
-            base: BaseNode::new(config)
+            base: BaseNode::new(config),
         }
     }
 
     async fn init_gossipsub_topic(&mut self) -> Result<gossipsub::IdentTopic, NodeError> {
         let topic = gossipsub::IdentTopic::new("custom_events");
 
-        let swarm = self.base.swarm.as_ref()
+        let swarm = self
+            .base
+            .swarm
+            .as_ref()
             .ok_or(NodeError::SwarmNotInitialized)?;
         let mut swarm = swarm.lock().await;
 
-        swarm.behaviour_mut().gossipsub.subscribe(&topic)
+        swarm
+            .behaviour_mut()
+            .gossipsub
+            .subscribe(&topic)
             .map_err(|e| NodeError::ConfigError(e.to_string()))?;
 
         info!("Subscribed to topic: {}", topic);
@@ -58,9 +67,12 @@ impl ValidatorNode {
         Ok(topic)
     }
 
-    async fn handle_key_exchange_event(&mut self, event: request_response::Event<PartialKeyRequest, PartialKeyResponse>) {
+    async fn handle_key_exchange_event(
+        &mut self,
+        event: request_response::Event<PartialKeyRequest, PartialKeyResponse>,
+    ) {
         match event {
-            request_response::Event::Message { peer, message } => {
+            request_response::Event::Message { peer, message, .. } => {
                 match message {
                     request_response::Message::Request {
                         request_id,
@@ -82,8 +94,15 @@ impl ValidatorNode {
                                 node_index: request.node_index,
                             };
 
-                            info!("Sending key response to relayer for index {}", request.node_index);
-                            if let Err(e) = swarm.behaviour_mut().key_exchange.send_response(channel, response) {
+                            info!(
+                                "Sending key response to relayer for index {}",
+                                request.node_index
+                            );
+                            if let Err(e) = swarm
+                                .behaviour_mut()
+                                .key_exchange
+                                .send_response(channel, response)
+                            {
                                 error!("Failed to send key response: {:?}", e);
                             }
                         }
@@ -95,10 +114,18 @@ impl ValidatorNode {
                 error!("Failed to send response to relayer {}: {:?}", peer, error);
             }
             request_response::Event::InboundFailure { peer, error, .. } => {
-                error!("Failed to receive request from relayer {}: {:?}", peer, error);
+                error!(
+                    "Failed to receive request from relayer {}: {:?}",
+                    peer, error
+                );
             }
-            request_response::Event::ResponseSent { peer, request_id } => {
-                info!("Successfully sent response to relayer {} for request {}", peer, request_id);
+            request_response::Event::ResponseSent {
+                peer, request_id, ..
+            } => {
+                info!(
+                    "Successfully sent response to relayer {} for request {}",
+                    peer, request_id
+                );
             }
         }
     }
@@ -114,7 +141,10 @@ impl ValidatorNode {
             return Ok(());
         }
 
-        let swarm = self.base.swarm.as_ref()
+        let swarm = self
+            .base
+            .swarm
+            .as_ref()
             .ok_or_else(|| NodeError::SwarmNotInitialized)?;
         let swarm = swarm.clone();
 
@@ -130,7 +160,10 @@ impl ValidatorNode {
                 let event = CustomEvent::new().unwrap();
                 let message = serde_json::to_string(&event).unwrap();
 
-                if let Err(e) = behaviour.gossipsub.publish(topic.clone(), message.as_bytes()) {
+                if let Err(e) = behaviour
+                    .gossipsub
+                    .publish(topic.clone(), message.as_bytes())
+                {
                     error!("Failed to publish event: {:?}", e);
                 } else {
                     info!("Event published successfully");
@@ -142,7 +175,7 @@ impl ValidatorNode {
     }
 
     // async fn store_partial_key(&mut self, response: PartialKeyResponse) {
-    //     // Implémenter le stockage sécurisé de la clé partielle
+    //     // Store the partial key securely
     //     info!("Storing partial key {}", response.node_index);
     // }
 
@@ -182,8 +215,12 @@ impl ValidatorNode {
         self.init_gossipsub_topic().await?;
         self.publish_blockchain_event().await?;
 
-        let swarm = Arc::clone(self.base.swarm.as_ref()
-            .expect("Swarm should be initialized"));
+        let swarm = Arc::clone(
+            self.base
+                .swarm
+                .as_ref()
+                .expect("Swarm should be initialized"),
+        );
 
         while self.base.state != NodeState::Disconnected {
             let event = {

@@ -1,27 +1,23 @@
 use libp2p::identity::Keypair;
+use libp2p::kad::store::MemoryStore;
 use libp2p::kad::Mode;
 use libp2p::request_response::ProtocolSupport;
+use libp2p::{gossipsub, noise, swarm::SwarmEvent, tcp, yamux, Multiaddr, SwarmBuilder};
 use libp2p::{identify, kad, ping, request_response, PeerId, StreamProtocol};
-use libp2p::kad::store::MemoryStore;
+use std::hash::{Hash, Hasher};
 use std::num::NonZeroUsize;
 use std::str::FromStr;
 use std::sync::Arc;
-use tokio::sync::Mutex;
-use libp2p::{
-    gossipsub,
-    swarm::SwarmEvent,
-    tcp,
-    noise,
-    yamux,
-    Multiaddr,
-    SwarmBuilder
-};
 use std::time::Duration;
-use std::hash::{Hash, Hasher};
+use tokio::sync::Mutex;
 use tracing::{debug, error, info, warn};
 
-use crate::types::{NodeConfig, NodeBehaviour, NodeError, NodeState, NodeMetrics, NodeBehaviourEvent};
-use crate::utils::peer_id::{generate_keypair, read_keypair_from_file, DefaultUserDirectoryProvider};
+use crate::types::{
+    NodeBehaviour, NodeBehaviourEvent, NodeConfig, NodeError, NodeMetrics, NodeState,
+};
+use crate::utils::peer_id::{
+    generate_keypair, read_keypair_from_file, DefaultUserDirectoryProvider,
+};
 
 const KEY_EXCHANGE_PROTOCOL: &str = "/key-exchange/1.0.0";
 
@@ -108,8 +104,8 @@ impl BaseNode {
         let keypair = &self.get_keypair_for_network();
         let gossipsub_config = Self::configure_gossipsub()?;
         let kademlia_config = Self::configure_kademlia();
-        let request_response_config = request_response::Config::default()
-            .with_request_timeout(Duration::from_secs(30));
+        let request_response_config =
+            request_response::Config::default().with_request_timeout(Duration::from_secs(30));
 
         let swarm = SwarmBuilder::with_existing_identity(keypair.clone())
             .with_tokio()
@@ -138,9 +134,14 @@ impl BaseNode {
                         "chaincraft-p2p/1.0.0".to_string(),
                         key.public(),
                     )),
-                    ping: ping::Behaviour::new(ping::Config::new().with_interval(Duration::from_secs(1))),
+                    ping: ping::Behaviour::new(
+                        ping::Config::new().with_interval(Duration::from_secs(1)),
+                    ),
                     key_exchange: request_response::json::Behaviour::new(
-                        [(StreamProtocol::new(KEY_EXCHANGE_PROTOCOL), ProtocolSupport::Full)],
+                        [(
+                            StreamProtocol::new(KEY_EXCHANGE_PROTOCOL),
+                            ProtocolSupport::Full,
+                        )],
                         request_response_config,
                     ),
                 })
@@ -158,35 +159,40 @@ impl BaseNode {
             return Ok(());
         }
 
-        let bootstrap_peer_id = PeerId::from_str(&self.config.bootstrap_peer_id.as_ref().unwrap())
-            .map_err(|_| NodeError::ConfigError("Missing bootstrap peer ID".to_string()))?;
+        let bootstrap_peer_id =
+            PeerId::from_str(self.config.bootstrap_peer_id.as_ref().unwrap())
+                .map_err(|_| NodeError::ConfigError("Missing bootstrap peer ID".to_string()))?;
 
         let bootstrap_addr = if let Some(addr) = &self.config.bootstrap_address {
             if addr.parse::<std::net::IpAddr>().is_ok() {
                 format!(
                     "/ip4/{}/udp/{}/quic-v1/p2p/{}",
-                    addr,
-                    self.config.bootstrap_port,
-                    bootstrap_peer_id
+                    addr, self.config.bootstrap_port, bootstrap_peer_id
                 )
             } else {
                 format!(
                     "/dns4/{}/udp/{}/quic-v1/p2p/{}",
-                    addr,
-                    self.config.bootstrap_port,
-                    bootstrap_peer_id
+                    addr, self.config.bootstrap_port, bootstrap_peer_id
                 )
             }
             .parse::<Multiaddr>()
             .map_err(|e| NodeError::ConfigError(e.to_string()))?
         } else {
-            return Err(NodeError::ConfigError("Missing bootstrap address".to_string()));
+            return Err(NodeError::ConfigError(
+                "Missing bootstrap address".to_string(),
+            ));
         };
 
         if let Some(swarm) = &self.swarm {
             let mut swarm = swarm.lock().await;
-            info!("Add Bootstrap peer ID: {} Addr: {}", bootstrap_peer_id, bootstrap_addr);
-            swarm.behaviour_mut().kademlia.add_address(&bootstrap_peer_id, bootstrap_addr);
+            info!(
+                "Add Bootstrap peer ID: {} Addr: {}",
+                bootstrap_peer_id, bootstrap_addr
+            );
+            swarm
+                .behaviour_mut()
+                .kademlia
+                .add_address(&bootstrap_peer_id, bootstrap_addr);
         }
 
         Ok(())
@@ -194,36 +200,38 @@ impl BaseNode {
 
     // Common network setup methods
     pub async fn init_network_listener(&mut self) -> Result<(), NodeError> {
-        let swarm = self.swarm.as_ref()
+        let swarm = self
+            .swarm
+            .as_ref()
             .ok_or_else(|| NodeError::SwarmNotInitialized)?;
         let mut swarm = swarm.lock().await;
         let behaviour = swarm.behaviour_mut();
 
         behaviour.kademlia.set_mode(Some(Mode::Server));
 
-        let quic_addr: Multiaddr = format!("/ip4/{}/udp/{}/quic-v1", self.config.listen_address, self.config.port)
-            .parse()
-            .map_err(|e| {
-                error!("Failed to parse address: {}", e);
-                NodeError::MultiAddrError(e)
-            })?;
+        let quic_addr: Multiaddr = format!(
+            "/ip4/{}/udp/{}/quic-v1",
+            self.config.listen_address, self.config.port
+        )
+        .parse()
+        .map_err(|e| {
+            error!("Failed to parse address: {}", e);
+            NodeError::MultiAddrError(e)
+        })?;
 
-        swarm.listen_on(quic_addr)
-            .map_err(|e| {
-                error!("Failed to start listening: {}", e);
-                NodeError::ListenError(e)
-            })?;
+        swarm.listen_on(quic_addr).map_err(|e| {
+            error!("Failed to start listening: {}", e);
+            NodeError::ListenError(e)
+        })?;
 
         Ok(())
     }
 
     pub async fn handle_common_events(&mut self, event: SwarmEvent<NodeBehaviourEvent>) {
         match event {
-            SwarmEvent::Behaviour(NodeBehaviourEvent::Kademlia(kad::Event::OutboundQueryProgressed {
-                result,
-                stats,
-                ..
-            })) => {
+            SwarmEvent::Behaviour(NodeBehaviourEvent::Kademlia(
+                kad::Event::OutboundQueryProgressed { result, stats, .. },
+            )) => {
                 match result {
                     kad::QueryResult::Bootstrap(Ok(ok)) => {
                         info!("Bootstrap succeeded with stats: {:?}, ok: {:?}", stats, ok);
@@ -258,7 +266,10 @@ impl BaseNode {
                 ..
             })) => {
                 if !self.config.is_bootstrap_started {
-                    info!("Routing table updated - Peer: {:?}, Addresses: {:?}", peer, addresses);
+                    info!(
+                        "Routing table updated - Peer: {:?}, Addresses: {:?}",
+                        peer, addresses
+                    );
                     if let Some(swarm) = &self.swarm {
                         let mut swarm = swarm.lock().await;
                         info!("Get closest peers from Kademlia: {}", peer);
@@ -272,20 +283,29 @@ impl BaseNode {
                 info!("Listening on {}", address);
             }
 
-            SwarmEvent::Behaviour(NodeBehaviourEvent::Identify(identify::Event::Sent { peer_id, .. })) => {
+            SwarmEvent::Behaviour(NodeBehaviourEvent::Identify(identify::Event::Sent {
+                peer_id,
+                ..
+            })) => {
                 info!("Sent identify info to {:?}", peer_id);
             }
 
-            SwarmEvent::Behaviour(NodeBehaviourEvent::Identify(identify::Event::Received { info, .. })) => {
+            SwarmEvent::Behaviour(NodeBehaviourEvent::Identify(identify::Event::Received {
+                info,
+                ..
+            })) => {
                 // Receive information every 5 minutes
                 info!("Received {:?}", info);
                 if let Some(swarm) = &self.swarm {
-                    let mut _swarm: tokio::sync::MutexGuard<'_, libp2p::Swarm<NodeBehaviour>> = swarm.lock().await;
+                    let mut _swarm: tokio::sync::MutexGuard<'_, libp2p::Swarm<NodeBehaviour>> =
+                        swarm.lock().await;
                     let behaviour = _swarm.behaviour_mut();
                     let peer_id = info.public_key.clone().to_peer_id();
 
                     for addr in info.listen_addrs {
-                        let addr = format!("{}/p2p/{}", addr, peer_id).parse::<Multiaddr>().unwrap();
+                        let addr = format!("{}/p2p/{}", addr, peer_id)
+                            .parse::<Multiaddr>()
+                            .unwrap();
                         info!("Add peer ID to Kademlia: {}, Address: {}", peer_id, addr);
                         behaviour.kademlia.add_address(&peer_id, addr);
                     }
@@ -295,15 +315,20 @@ impl BaseNode {
                 }
             }
 
-            SwarmEvent::ConnectionEstablished { peer_id, endpoint, .. } => {
+            SwarmEvent::ConnectionEstablished {
+                peer_id, endpoint, ..
+            } => {
                 info!("Connected established to {} via {:?}", peer_id, endpoint);
 
                 if let Some(swarm) = &self.swarm {
-                    let mut _swarm: tokio::sync::MutexGuard<'_, libp2p::Swarm<NodeBehaviour>> = swarm.lock().await;
+                    let mut _swarm: tokio::sync::MutexGuard<'_, libp2p::Swarm<NodeBehaviour>> =
+                        swarm.lock().await;
                     let behaviour = _swarm.behaviour_mut();
                     let remote_addr = endpoint.get_remote_address().clone();
 
-                    let addr = format!("{}/p2p/{}", remote_addr, peer_id).parse::<Multiaddr>().unwrap();
+                    let addr = format!("{}/p2p/{}", remote_addr, peer_id)
+                        .parse::<Multiaddr>()
+                        .unwrap();
                     info!("Add peer ID to Kademlia: {}, Address: {}", peer_id, addr);
                     behaviour.kademlia.add_address(&peer_id, addr);
 

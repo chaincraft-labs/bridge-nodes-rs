@@ -15,7 +15,6 @@ static DEFAULT_PATH: &[&str] = &[".chaincraft", "keypair.key"];
 const PATH_PERMISSIONS: u32 = 0o700;
 const FILE_PERMISSIONS: u32 = 0o600;
 
-
 pub trait UserDirectoryProvider {
     fn get_user_home_dir(&self) -> Option<PathBuf>;
 }
@@ -69,25 +68,28 @@ pub fn generate_keypair(secret_key_seed: Option<[u8; 32]>) -> Keypair {
     }
 }
 
-    /// Saves a cryptographic keypair to a file on disk.
-    ///
-    /// The keypair is first encoded as a protobuf structure, then encoded as base64, and finally saved to
-    /// a file on disk. The file is saved in the user's home directory, in a directory named `.chaincraft`,
-    /// and has the filename `keypair.key`.
-    ///
-    /// If the directory `.chaincraft` does not exist, it will be created with the permissions `0o700`.
-    /// If the file `keypair.key` does not exist, it will be created with the permissions `0o600`.
-    ///
-    /// # Arguments
-    ///
-    /// * `keypair` - The cryptographic keypair to be saved.
-    /// * `provider` - An implementation of `UserDirectoryProvider` that provides the path to the user's home directory.
-    ///
-    /// # Returns
-    ///
-    /// A `Result` that indicates whether the keypair was successfully saved. If the home directory could not be
-    /// determined, the function will return `Err("Home directory not found")`.
-fn save_keypair<T: UserDirectoryProvider>(keypair: &Keypair, provider: &T) -> Result<(), Box<dyn Error>> {
+/// Saves a cryptographic keypair to a file on disk.
+///
+/// The keypair is first encoded as a protobuf structure, then encoded as base64, and finally saved to
+/// a file on disk. The file is saved in the user's home directory, in a directory named `.chaincraft`,
+/// and has the filename `keypair.key`.
+///
+/// If the directory `.chaincraft` does not exist, it will be created with the permissions `0o700`.
+/// If the file `keypair.key` does not exist, it will be created with the permissions `0o600`.
+///
+/// # Arguments
+///
+/// * `keypair` - The cryptographic keypair to be saved.
+/// * `provider` - An implementation of `UserDirectoryProvider` that provides the path to the user's home directory.
+///
+/// # Returns
+///
+/// A `Result` that indicates whether the keypair was successfully saved. If the home directory could not be
+/// determined, the function will return `Err("Home directory not found")`.
+fn save_keypair<T: UserDirectoryProvider>(
+    keypair: &Keypair,
+    provider: &T,
+) -> Result<(), Box<dyn Error>> {
     // Encode as protobuf structure.
     let encoded_keypair_pbuf = keypair.to_protobuf_encoding()?;
 
@@ -125,14 +127,16 @@ fn save_keypair<T: UserDirectoryProvider>(keypair: &Keypair, provider: &T) -> Re
 /// # Arguments
 ///
 /// * `provider` - An implementation of `UserDirectoryProvider` that provides the path to
-/// the user's home directory.
+///   the user's home directory.
 ///
 /// # Returns
 ///
 /// A `Result` containing the `Keypair` if the file is successfully read and decoded.
 /// Returns an error if the home directory cannot be determined, the file cannot be opened,
 /// or the content cannot be decoded.
-pub fn read_keypair_from_file<T: UserDirectoryProvider>(provider: &T) -> Result<Keypair, Box<dyn Error>> {
+pub fn read_keypair_from_file<T: UserDirectoryProvider>(
+    provider: &T,
+) -> Result<Keypair, Box<dyn Error>> {
     if let Some(home_dir) = provider.get_user_home_dir() {
         let file_path = DEFAULT_PATH
             .iter()
@@ -151,42 +155,42 @@ pub fn read_keypair_from_file<T: UserDirectoryProvider>(provider: &T) -> Result<
     }
 }
 
-    /// Reads a cryptographic keypair from a file in the user's home directory and returns its PeerId.
-    ///
-    /// The file is read from the user's home directory in a directory named `.chaincraft`, and has the filename `keypair.key`.
-    ///
-    /// # Arguments
-    ///
-    /// * `provider` - An implementation of `UserDirectoryProvider` that provides the path to the user's home directory.
-    ///
-    /// # Returns
-    ///
-    /// A `Result` that indicates whether the PeerId was successfully generated.
-    /// If the home directory could not be determined,
-    /// the function will return `Err("Home directory not found")`.
-    /// If the file `keypair.key` does not exist or is not a valid keypair,
-    /// the function will return `Err("Error reading keypair")`.
+/// Reads a cryptographic keypair from a file in the user's home directory and returns its PeerId.
+///
+/// The file is read from the user's home directory in a directory named `.chaincraft`, and has the filename `keypair.key`.
+///
+/// # Arguments
+///
+/// * `provider` - An implementation of `UserDirectoryProvider` that provides the path to the user's home directory.
+///
+/// # Returns
+///
+/// A `Result` that indicates whether the PeerId was successfully generated.
+/// If the home directory could not be determined,
+/// the function will return `Err("Home directory not found")`.
+/// If the file `keypair.key` does not exist or is not a valid keypair,
+/// the function will return `Err("Error reading keypair")`.
 pub fn generate_peer_id<T: UserDirectoryProvider>(provider: &T) -> Result<PeerId, Box<dyn Error>> {
     Ok(PeerId::from(read_keypair_from_file(provider)?.public()))
 }
 
-    /// Generates a new cryptographic keypair and saves it to the user's home directory.
-    ///
-    /// The generated keypair is saved to a file named `keypair.key` in a directory named `.chaincraft` in the user's home directory.
-    ///
-    /// The `seed_phrase` parameter is optional and can be used to generate a deterministic keypair.
-    /// If `seed_phrase` is `None`, a new random keypair will be generated.
-    ///
-    /// # Arguments
-    ///
-    /// * `seed_phrase` - An optional seed phrase used to generate a deterministic keypair.
-    /// * `provider` - An implementation of `UserDirectoryProvider` that provides the path to the user's home directory.
-    ///
-    /// # Returns
-    ///
-    /// A `Result` that indicates whether the keypair was successfully generated and saved.
-    /// If the home directory could not be determined,
-    /// the function will return `Err("Home directory not found")`.
+/// Generates a new cryptographic keypair and saves it to the user's home directory.
+///
+/// The generated keypair is saved to a file named `keypair.key` in a directory named `.chaincraft` in the user's home directory.
+///
+/// The `seed_phrase` parameter is optional and can be used to generate a deterministic keypair.
+/// If `seed_phrase` is `None`, a new random keypair will be generated.
+///
+/// # Arguments
+///
+/// * `seed_phrase` - An optional seed phrase used to generate a deterministic keypair.
+/// * `provider` - An implementation of `UserDirectoryProvider` that provides the path to the user's home directory.
+///
+/// # Returns
+///
+/// A `Result` that indicates whether the keypair was successfully generated and saved.
+/// If the home directory could not be determined,
+/// the function will return `Err("Home directory not found")`.
 pub fn generate_new_keypair_and_peer_id<T: UserDirectoryProvider>(
     seed_phrase: Option<&str>,
     provider: &T,
@@ -273,9 +277,7 @@ mod tests {
     #[test]
     fn test_generate_keypair_with_seed() {
         let seed: [u8; 32] = [
-            1, 2, 3, 4, 5, 6, 7, 8,
-            9, 10, 11, 12, 13, 14, 15,16,
-            17, 18, 19, 20, 21, 22, 23, 24,
+            1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24,
             25, 26, 27, 28, 29, 30, 31, 32,
         ];
 
@@ -283,7 +285,8 @@ mod tests {
         let keypair_b = generate_keypair(Some(seed));
 
         assert_eq!(
-            keypair_a.public(), keypair_b.public(),
+            keypair_a.public(),
+            keypair_b.public(),
             "Keypairs should be the same"
         );
     }
@@ -294,7 +297,8 @@ mod tests {
         let keypair_b = generate_keypair(None);
 
         assert_ne!(
-            keypair_a.public(), keypair_b.public(),
+            keypair_a.public(),
+            keypair_b.public(),
             "Keypairs should be different"
         );
     }
@@ -310,16 +314,20 @@ mod tests {
         assert!(result.is_ok(), "Failed to save keypair: {:?}", result);
 
         // Check that the key file has been created
-        let file_path = DEFAULT_PATH.iter().fold(
-            provider.get_temp_dir_path(), |path, component| path.join(component)
-        );
+        let file_path = DEFAULT_PATH
+            .iter()
+            .fold(provider.get_temp_dir_path(), |path, component| {
+                path.join(component)
+            });
         assert!(file_path.exists(), "Key file has not been created.");
 
         // Check that the content of the key file is correct
-        let encoded_keypair_pbuf = keypair.to_protobuf_encoding().expect("Échec de l'encodage protobuf");
+        let encoded_keypair_pbuf = keypair
+            .to_protobuf_encoding()
+            .expect("Failed to encode keypair as protobuf");
         let expected_encoded_keypair = STANDARD.encode(&encoded_keypair_pbuf);
 
-        let saved_content = fs::read_to_string(file_path).expect("Échec de la lecture du fichier de clé");
+        let saved_content = fs::read_to_string(file_path).expect("Failed to read the keypair file");
         assert_eq!(
             saved_content, expected_encoded_keypair,
             "The contents of the key file do not match."
@@ -331,15 +339,12 @@ mod tests {
         let seed_phrase = Some("test_seed_phrase");
         let provider: MockUserDirectoryProvider = MockUserDirectoryProvider::new();
 
-        let result = generate_new_keypair_and_peer_id(
-            seed_phrase.as_deref(),
-            &provider,
-        );
+        let result = generate_new_keypair_and_peer_id(seed_phrase, &provider);
 
         match result {
             Ok(peer_id) => {
                 // Verify that a PeerId is generated
-                assert!(peer_id.to_base58().len() > 0);
+                assert!(!peer_id.to_base58().is_empty());
                 println!("Generated Peer ID with seed: {}", peer_id);
             }
             Err(e) => panic!("Expected PeerId, got error: {}", e),
@@ -351,18 +356,63 @@ mod tests {
         let seed_phrase: Option<&str> = None;
         let provider = MockUserDirectoryProvider::new();
 
-        let result = generate_new_keypair_and_peer_id(
-            seed_phrase,
-            &provider,
-        );
+        let result = generate_new_keypair_and_peer_id(seed_phrase, &provider);
 
         match result {
             Ok(peer_id) => {
                 // Verify that a PeerId is generated
-                assert!(peer_id.to_base58().len() > 0);
+                assert!(!peer_id.to_base58().is_empty());
                 println!("Generated Peer ID without seed: {}", peer_id);
             }
             Err(e) => panic!("Expected PeerId, got error: {}", e),
         }
+    }
+
+    // Node identities are derived from seed phrases and stored on disk: a
+    // dependency upgrade must neither change the peer ID a seed yields nor the
+    // format of `keypair.key`, or every deployed node changes identity.
+    const RELAYER_TEST_PEER_ID: &str = "12D3KooWAPWpdc7AWArNdQyag5qZKHi1mQSnAdupc2ejJ1ghMhhn";
+    const VALIDATOR_TEST_PEER_ID: &str = "12D3KooWDgCeJ15KaPzEEhV8XJd1xoN7hYBBVLdx8tBPiDgA5Lfo";
+    // `keypair.key` as written for the public test seed `relayer_test`.
+    const RELAYER_TEST_KEYPAIR_FILE: &str =
+        "CAESQFn9lxQL5dNzI9yBubU2u0xB8nlEZ+bOlPp7BfRhdygyCH3zcNtIkTmw0agc8xN+tNzKVjeTRnZ7hA8H249GQl0=";
+
+    #[test]
+    fn test_seed_phrase_yields_a_stable_peer_id() {
+        for (seed_phrase, expected) in [
+            ("relayer_test", RELAYER_TEST_PEER_ID),
+            ("validator_test", VALIDATOR_TEST_PEER_ID),
+        ] {
+            let provider = MockUserDirectoryProvider::new();
+            let peer_id = generate_new_keypair_and_peer_id(Some(seed_phrase), &provider)
+                .expect("Failed to generate the peer ID");
+            assert_eq!(peer_id.to_base58(), expected, "seed phrase {seed_phrase}");
+        }
+    }
+
+    #[test]
+    fn test_keypair_file_format_is_stable() {
+        let provider = MockUserDirectoryProvider::new();
+        generate_new_keypair_and_peer_id(Some("relayer_test"), &provider)
+            .expect("Failed to generate the peer ID");
+        let file_path = DEFAULT_PATH
+            .iter()
+            .fold(provider.get_temp_dir_path(), |path, component| {
+                path.join(component)
+            });
+        let saved_content = fs::read_to_string(file_path).expect("Failed to read the keypair file");
+        assert_eq!(saved_content, RELAYER_TEST_KEYPAIR_FILE);
+    }
+
+    #[test]
+    fn test_existing_keypair_file_is_read_back() {
+        let provider = MockUserDirectoryProvider::new();
+        let dir = provider.get_temp_dir_path().join(DEFAULT_PATH[0]);
+        fs::create_dir_all(&dir).expect("Failed to create the keypair directory");
+        fs::write(dir.join(DEFAULT_PATH[1]), RELAYER_TEST_KEYPAIR_FILE)
+            .expect("Failed to write the keypair file");
+
+        let peer_id = generate_peer_id(&provider).expect("Failed to read the peer ID");
+        assert_eq!(peer_id.to_base58(), RELAYER_TEST_PEER_ID);
     }
 }
