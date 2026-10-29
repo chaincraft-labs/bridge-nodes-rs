@@ -1,4 +1,5 @@
 use std::error::Error;
+use std::path::PathBuf;
 
 use clap::Parser;
 use tracing_subscriber::EnvFilter;
@@ -242,6 +243,17 @@ Examples:
     validator-node --relayer --local-test"#
     )]
     local_test: bool,
+
+    #[arg(
+        long,
+        help = "Configuration file [default: Config.toml]",
+        long_help = r#"Path of the configuration file. Defaults to Config.toml in the current directory; a missing file at that default path is not an error. A path given explicitly must exist and parse.
+
+Example:
+    validator-node --relayer --config /etc/chaincraft/Config.toml"#,
+        value_name = "PATH"
+    )]
+    config: Option<PathBuf>,
 }
 
 #[tokio::main]
@@ -252,8 +264,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     let args = Args::parse();
     let user_dir_provider = DefaultUserDirectoryProvider;
-    let config = Config::load("config.toml")?;
-    println!("Config : {:#?}", config);
+    let config = Config::load_optional(args.config.as_deref())?;
+    tracing::debug!("Config : {:#?}", config);
 
     if args.new_peer_id && !args.read_peer_id {
         match generate_new_keypair_and_peer_id(args.seed_phrase.as_deref(), &user_dir_provider) {

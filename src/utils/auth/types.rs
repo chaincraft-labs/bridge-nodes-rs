@@ -5,7 +5,7 @@ use std::collections::BTreeMap;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MerkleProof {
     pub path: Vec<[u8; 32]>,
-    pub position: Vec<usize>,
+    pub position: Vec<usize>, // 0 for left, 1 for right
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -67,7 +67,11 @@ impl BaseNode {
             },
         ];
 
-        let peer_id = PeerId::from_public_key(&self.keypair.clone().unwrap().public());
+        let keypair = self
+            .keypair
+            .as_ref()
+            .ok_or_else(|| NodeError::ConfigError("No keypair to authorize".to_string()))?;
+        let peer_id = PeerId::from_public_key(&keypair.public());
 
         for authorized_peer in authorized_peers {
             if authorized_peer.peer_id == peer_id {
@@ -75,7 +79,7 @@ impl BaseNode {
             }
         }
 
-        Err(NodeError::PeerError(peer_id.to_string()))
+        Err(NodeError::UnauthorizedPeer(peer_id.to_string()))
     }
 
     // Common network setup methods
@@ -365,5 +369,71 @@ impl BaseNode {
             // Add other common event handling logic here...
             _ => debug!("Other event: {:?}", event),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::utils::peer_id::seed_phrase_to_bytes;
+
+    // A node holding the given keypair. Built in memory: no keypair file is
+    // read or written.
+    fn node_with_keypair(keypair: Option<Keypair>) -> BaseNode {
+        let mut node = BaseNode::new(NodeConfig {
+            port: 0,
+            bootstrap_address: None,
+            bootstrap_port: 0,
+            bootstrap_peer_id: None,
+            is_bootstrap_node: false,
+            is_bootstrap_started: false,
+            gen_msg: false,
+            listen_address: "127.0.0.1".to_string(),
+            local_test: true,
+        });
+        node.keypair = keypair;
+        node
+    }
+
+    #[tokio::test]
+    async fn test_authorize_peer_accepts_the_relayer_test_identity() {
+        let keypair = generate_keypair(seed_phrase_to_bytes(Some("relayer_test")));
+        let node = node_with_keypair(Some(keypair));
+
+        assert!(node.authorize_peer().await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_authorize_peer_rejects_a_random_identity() {
+        let keypair = generate_keypair(None);
+        let peer_id = keypair.public().to_peer_id();
+        let node = node_with_keypair(Some(keypair));
+
+        match node.authorize_peer().await {
+            Err(NodeError::UnauthorizedPeer(id)) => assert_eq!(id, peer_id.to_string()),
+            other => panic!("expected UnauthorizedPeer, got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_authorize_peer_without_keypair_is_an_error() {
+        let node = node_with_keypair(None);
+
+        assert!(matches!(
+            node.authorize_peer().await,
+            Err(NodeError::ConfigError(_))
+        ));
+    }
+
+    #[test]
+    fn test_unauthorized_peer_and_peer_error_messages() {
+        assert_eq!(
+            NodeError::UnauthorizedPeer("12D3KooWX".to_string()).to_string(),
+            "Peer 12D3KooWX unauthorized"
+        );
+        assert_eq!(
+            NodeError::PeerError("Peer 12D3KooWX not connected".to_string()).to_string(),
+            "Peer error: Peer 12D3KooWX not connected"
+        );
     }
 }

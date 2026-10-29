@@ -36,7 +36,7 @@ impl UserDirectoryProvider for DefaultUserDirectoryProvider {
 /// If the input seed phrase is `Some`, the function will hash the seed phrase using the SHA3-256 hash
 /// algorithm, and return the resulting 32-byte array of bytes as an `Option<[u8; 32]>`. If the
 /// resulting array of bytes cannot be converted into a 32-byte array, the function will return `None`.
-fn seed_phrase_to_bytes(seed_phrase: Option<&str>) -> Option<[u8; 32]> {
+pub(crate) fn seed_phrase_to_bytes(seed_phrase: Option<&str>) -> Option<[u8; 32]> {
     let seed = seed_phrase?;
     let mut hasher = Sha3_256::new();
     hasher.update(seed.as_bytes());

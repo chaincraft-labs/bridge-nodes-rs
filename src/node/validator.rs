@@ -6,7 +6,6 @@ use tokio::sync::Mutex;
 use tracing::{error, info};
 
 use super::common::{BaseNode, NodeCommon};
-use crate::utils::auth::{AuthorizedPeersTree, MerkleProof};
 use crate::{
     types::{NodeBehaviourEvent, NodeConfig, NodeError},
     CustomEvent, NodeBehaviour, NodeMetrics, NodeState,
