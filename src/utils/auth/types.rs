@@ -4,8 +4,14 @@ use std::collections::BTreeMap;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MerkleProof {
+    /// Sibling hashes from the leaf up to the root, one per level where the
+    /// node being verified has a sibling.
     pub path: Vec<[u8; 32]>,
-    pub position: Vec<usize>, // 0 for left, 1 for right
+    /// Where the node being verified sits at step `i`: `0` when it is the
+    /// left child (the sibling `path[i]` is on its right), `1` when it is the
+    /// right child (the sibling is on its left). Any other value makes the
+    /// proof invalid.
+    pub position: Vec<usize>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
