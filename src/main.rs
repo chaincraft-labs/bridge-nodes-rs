@@ -1,9 +1,10 @@
 use std::error::Error;
+use std::path::PathBuf;
 
 use clap::Parser;
 use tracing_subscriber::EnvFilter;
 use validator_node::{
-    node::{relayer::RelayerNode, validator::ValidatorNode},
+    node::{config::Config, relayer::RelayerNode, validator::ValidatorNode},
     utils::peer_id::{
         generate_new_keypair_and_peer_id, generate_peer_id, DefaultUserDirectoryProvider,
     },
@@ -242,6 +243,17 @@ Examples:
     validator-node --relayer --local-test"#
     )]
     local_test: bool,
+
+    #[arg(
+        long,
+        help = "Configuration file [default: Config.toml]",
+        long_help = r#"Path of the configuration file. Defaults to Config.toml in the current directory; a missing file at that default path is not an error. A path given explicitly must exist and parse.
+
+Example:
+    validator-node --relayer --config /etc/chaincraft/Config.toml"#,
+        value_name = "PATH"
+    )]
+    config: Option<PathBuf>,
 }
 
 #[tokio::main]
@@ -252,6 +264,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     let args = Args::parse();
     let user_dir_provider = DefaultUserDirectoryProvider;
+    let config = Config::load_optional(args.config.as_deref())?;
+    tracing::debug!("Config : {:#?}", config);
 
     if args.new_peer_id && !args.read_peer_id {
         match generate_new_keypair_and_peer_id(args.seed_phrase.as_deref(), &user_dir_provider) {
@@ -273,7 +287,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         }
     } else if args.validator {
         const DEFAULT_PORT: u16 = 62650;
-        let config = NodeConfig {
+        let node_config = NodeConfig {
             listen_address: args.listen_address.unwrap_or("0.0.0.0".to_string()),
             port: args.port.unwrap_or(DEFAULT_PORT),
             is_bootstrap_node: false,
@@ -284,11 +298,11 @@ async fn main() -> Result<(), Box<dyn Error>> {
             gen_msg: args.gen_msg,
             local_test: args.local_test,
         };
-        let mut node = ValidatorNode::new(config);
+        let mut node = ValidatorNode::new(node_config);
         node.run().await?;
     } else if args.relayer {
         const DEFAULT_PORT: u16 = 62649;
-        let config = NodeConfig {
+        let node_config = NodeConfig {
             listen_address: args.listen_address.unwrap_or("0.0.0.0".to_string()),
             port: args.port.unwrap_or(DEFAULT_PORT),
             is_bootstrap_node: true,
@@ -299,7 +313,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
             gen_msg: false,
             local_test: args.local_test,
         };
-        let mut node = RelayerNode::new(config);
+        let mut node = RelayerNode::new(node_config);
         node.run().await?;
     } else {
         eprintln!("Error : --help for more information");

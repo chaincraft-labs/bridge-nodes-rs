@@ -126,6 +126,9 @@ pub enum NodeError {
     #[error("Peer error: {0}")]
     PeerError(String),
 
+    #[error("Peer {0} unauthorized")]
+    UnauthorizedPeer(String),
+
     #[error("Bootstrap error: {0}")]
     BootstrapError(String),
 

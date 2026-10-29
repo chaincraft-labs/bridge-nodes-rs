@@ -18,3 +18,4 @@ target/
 
 # key file
 *.key
+.DS_Store
