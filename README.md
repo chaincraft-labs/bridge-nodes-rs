@@ -10,9 +10,9 @@ This project is a Rust-based decentralized bridge node designed to validate tran
   - QUIC transport protocol for secure, low-latency communication
   - Kademlia DHT for efficient peer discovery and routing
   - GossipSub for reliable pub/sub message propagation
-  - Dual node types:
-    - Bootstrap nodes: Network entry points providing initial peer discovery
-    - Regular nodes: Network participants handling routing and message propagation
+  - Two node types:
+    - Relayer: the bootstrap node, the network's entry point and administrator, which also serves the JSON-RPC API
+    - Validators: nodes that join through the relayer, then handle routing and message propagation
 
 ## Installation
 
@@ -54,19 +54,19 @@ This project is a Rust-based decentralized bridge node designed to validate tran
 1. Build the image and create containers
 
     ```sh
-    docker build -t bridge-validator-node:latest .
+    docker build -t libp2p-node:latest .
     docker compose -f DockerCompose.yml up
     ```
 
 2. Connect to containers
 
-    Bootstrap node:
+    Relayer (bootstrap node):
 
     ```sh
     docker exec --privileged -ti node_kdm_bootstrap /bin/bash
     ```
 
-    Regular nodes (1-5):
+    Validators (1-5):
 
     ```sh
     docker exec --privileged -ti node_kdm_client1 /bin/bash
@@ -75,7 +75,7 @@ This project is a Rust-based decentralized bridge node designed to validate tran
 
 ## Usage
 
-> Note: Replace **cargo run -- --args** with **./target/release/validator_node --args** when you ran **cargo build --release**
+> Note: Replace **cargo run -- --args** with **./target/release/validator_node --args** when you ran **cargo build --release**. `--help` lists every option.
 
 ### Peer ID Operations
 
@@ -95,29 +95,31 @@ This project is a Rust-based decentralized bridge node designed to validate tran
 
 ### Node Operations
 
-1. Start a bootstrap node
+1. Start a relayer
 
     ```sh
-    RUST_LOG=info cargo run -- --node --bootstrap
+    RUST_LOG=info cargo run -- --relayer
 
-    # [optional] --port <port> (default is 62649)
-    # [optional] --local-test : Generate a random peer_id
-    # [optional] --gen-msg : Allow the node to generate messages through gossipsub (for testing)
+    # [optional] --port <port> (default is 62649, UDP)
+    # [optional] --listen-address <ip> (default is 0.0.0.0)
+    # [optional] --local-test : use a random peer ID and leave the keypair file alone
     ```
 
-2. Start a regular node
+    The relayer logs its peer ID at start (`local_peer_id=...`) and serves the JSON-RPC API on port 8545 (see [docs/rpc](docs/rpc/README.md)).
+
+2. Start a validator
 
     ```sh
-    RUST_LOG=info cargo run -- --node --port <port> --bootstrap-port <port> --bootstrap-address <address> --bootstrap-peer-id <peer_id>
+    RUST_LOG=info cargo run -- --validator --bootstrap-address <address> --bootstrap-peer-id <peer_id>
 
-    # Example:
-    RUST_LOG=info cargo run -- --node --port 62650 --bootstrap-port 62649 --bootstrap-address 127.0.0.1 --bootstrap-peer-id 12D3KooWMoaiPNniRnweNBobf2YfGBUzpgaYNa8VGXyqoBHLVvUR
+    # Example: a relayer running on the same machine
+    RUST_LOG=info cargo run -- --validator --bootstrap-address 127.0.0.1 --bootstrap-peer-id <relayer peer ID>
 
-    # Start a node and generate a message
-    RUST_LOG=info cargo run -- --node --port 62650 --bootstrap-port 62649 --bootstrap-address 127.0.0.1 --bootstrap-peer-id 12D3KooWMoaiPNniRnweNBobf2YfGBUzpgaYNa8VGXyqoBHLVvUR --gen-msg
-
-    # [optional] --local-test : Generate a random peer_id
-    # [optional] --gen-msg : Allow the node to generate messages through gossipsub (for testing)
+    # [optional] --port <port> (default is 62650, UDP)
+    # [optional] --bootstrap-port <port> (default is 62649, the relayer's default)
+    # [optional] --listen-address <ip> (default is 0.0.0.0)
+    # [optional] --local-test : use a random peer ID and leave the keypair file alone
+    # [optional] --gen-msg : publish test messages through gossipsub
     ```
 
 ### Network Configuration
