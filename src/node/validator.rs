@@ -374,4 +374,21 @@ mod tests {
         })
         .await;
     }
+
+    #[tokio::test]
+    async fn test_a_validator_that_cannot_listen_stops_with_an_error() {
+        let mut config = test_config(false);
+        config.listen_address = "not-an-ip".to_string();
+        let mut node = ValidatorNode::new(config);
+
+        let result = tokio::time::timeout(Duration::from_secs(5), node.run())
+            .await
+            .expect("a validator that cannot listen must stop at once");
+
+        assert!(
+            matches!(result, Err(NodeError::MultiAddrError(_))),
+            "{:?}",
+            result
+        );
+    }
 }

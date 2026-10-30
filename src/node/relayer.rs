@@ -961,4 +961,21 @@ mod tests {
 
         assert!(!logged(&logs, "Denied a connection from unauthorized peer"));
     }
+
+    #[tokio::test]
+    async fn test_a_relayer_that_cannot_listen_stops_with_an_error() {
+        let mut config = test_config(true);
+        config.listen_address = "not-an-ip".to_string();
+        let mut node = RelayerNode::new(config);
+
+        let result = tokio::time::timeout(Duration::from_secs(5), node.run())
+            .await
+            .expect("a relayer that cannot listen must stop at once");
+
+        assert!(
+            matches!(result, Err(NodeError::MultiAddrError(_))),
+            "{:?}",
+            result
+        );
+    }
 }
