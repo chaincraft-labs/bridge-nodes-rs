@@ -262,6 +262,7 @@ impl AuthorizedPeers {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::utils::peer_id::{generate_keypair, seed_phrase_to_bytes};
     use tempfile::TempDir;
 
     // A temporary home: the real one is never touched.
@@ -641,5 +642,69 @@ mod tests {
         assert!(authorized.authorize(&[peer()]).is_err());
 
         assert_eq!(authorized.state(), state);
+    }
+
+    // The tree of the fixture: the peers of the seeds `relayer_test` and
+    // `validator_test`, signed with the key of `relayer_test` at a fixed
+    // time. Ed25519 signatures are deterministic, so this tree always
+    // encodes to the same bytes.
+    const FIXTURE_TIMESTAMP: i64 = 1_767_225_600;
+
+    /// The file the relayer writes for the fixture tree.
+    const AUTHORIZED_PEERS_FILE: &str = include_str!("testdata/authorized_peers.json");
+
+    fn seed_keypair(seed: &str) -> Keypair {
+        generate_keypair(seed_phrase_to_bytes(Some(seed)))
+    }
+
+    fn fixture_tree() -> AuthorizedPeersTree {
+        let relayer = seed_keypair("relayer_test");
+        let peers = ["relayer_test", "validator_test"]
+            .iter()
+            .map(|seed| seed_keypair(seed).public().to_peer_id())
+            .collect();
+        let mut tree = AuthorizedPeersTree::new();
+        tree.update_tree(peers, &relayer).unwrap();
+        tree.timestamp = FIXTURE_TIMESTAMP;
+        let mut message = b"chaincraft/authorized-peers/v1".to_vec();
+        message.extend_from_slice(&tree.root);
+        message.extend_from_slice(&FIXTURE_TIMESTAMP.to_be_bytes());
+        tree.signature = relayer.sign(&message).unwrap();
+        tree
+    }
+
+    #[test]
+    fn test_authorized_peers_file_format_is_stable() {
+        let home = TempHome::new();
+
+        home.store().save(&fixture_tree()).unwrap();
+
+        assert_eq!(
+            fs::read_to_string(home.file()).unwrap(),
+            AUTHORIZED_PEERS_FILE
+        );
+    }
+
+    #[test]
+    fn test_existing_authorized_peers_file_is_read_back() {
+        let home = TempHome::new();
+        fs::create_dir_all(home.file().parent().unwrap()).unwrap();
+        fs::write(home.file(), AUTHORIZED_PEERS_FILE).unwrap();
+
+        let authorized =
+            AuthorizedPeers::load(seed_keypair("relayer_test"), Some(home.store())).unwrap();
+
+        assert_eq!(
+            authorized.state(),
+            AuthorizedNodes {
+                peer_ids: vec![
+                    "12D3KooWAPWpdc7AWArNdQyag5qZKHi1mQSnAdupc2ejJ1ghMhhn".to_string(),
+                    "12D3KooWDgCeJ15KaPzEEhV8XJd1xoN7hYBBVLdx8tBPiDgA5Lfo".to_string(),
+                ],
+                root: "4c7899a581576f2349c4c551cb5e079298e353b7c649c9694df194d75bcf9d17"
+                    .to_string(),
+                timestamp: FIXTURE_TIMESTAMP,
+            }
+        );
     }
 }
