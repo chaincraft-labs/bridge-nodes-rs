@@ -21,10 +21,6 @@ use crate::utils::peer_id::{
 
 const KEY_EXCHANGE_PROTOCOL: &str = "/key-exchange/1.0.0";
 
-struct AuthorizedPeers {
-    peer_id: PeerId,
-}
-
 // Trait that defines common behavior for all node types
 pub trait NodeCommon {
     fn get_config(&self) -> &NodeConfig;
@@ -53,33 +49,6 @@ impl BaseNode {
             swarm: None,
             keypair: None,
         }
-    }
-
-    pub async fn authorize_peer(&self) -> Result<(), NodeError> {
-        let authorized_peers: Vec<AuthorizedPeers> = vec![
-            AuthorizedPeers {
-                peer_id: PeerId::from_str("12D3KooWSFDZvshsJQ75hGjsx2MYEdjDEd1K7RaS1X5UKKZDc1kT")
-                    .unwrap(),
-            },
-            AuthorizedPeers {
-                peer_id: PeerId::from_str("12D3KooWAPWpdc7AWArNdQyag5qZKHi1mQSnAdupc2ejJ1ghMhhn")
-                    .unwrap(),
-            },
-        ];
-
-        let keypair = self
-            .keypair
-            .as_ref()
-            .ok_or_else(|| NodeError::ConfigError("No keypair to authorize".to_string()))?;
-        let peer_id = PeerId::from_public_key(&keypair.public());
-
-        for authorized_peer in authorized_peers {
-            if authorized_peer.peer_id == peer_id {
-                return Ok(());
-            }
-        }
-
-        Err(NodeError::UnauthorizedPeer(peer_id.to_string()))
     }
 
     // Common network setup methods
@@ -250,7 +219,13 @@ impl BaseNode {
         Ok(())
     }
 
-    pub async fn handle_common_events(&mut self, event: SwarmEvent<NodeBehaviourEvent>) {
+    // Takes the swarm from the caller, which owns it (relayer) or holds its lock
+    // (validator): this method never locks `self.swarm`.
+    pub async fn handle_common_events(
+        &mut self,
+        swarm: &mut libp2p::Swarm<NodeBehaviour>,
+        event: SwarmEvent<NodeBehaviourEvent>,
+    ) {
         match event {
             SwarmEvent::Behaviour(NodeBehaviourEvent::Kademlia(
                 kad::Event::OutboundQueryProgressed { result, stats, .. },
@@ -293,11 +268,8 @@ impl BaseNode {
                         "Routing table updated - Peer: {:?}, Addresses: {:?}",
                         peer, addresses
                     );
-                    if let Some(swarm) = &self.swarm {
-                        let mut swarm = swarm.lock().await;
-                        info!("Get closest peers from Kademlia: {}", peer);
-                        swarm.behaviour_mut().kademlia.get_closest_peers(peer);
-                    }
+                    info!("Get closest peers from Kademlia: {}", peer);
+                    swarm.behaviour_mut().kademlia.get_closest_peers(peer);
                     self.config.is_bootstrap_started = true;
                 }
             }
@@ -319,23 +291,19 @@ impl BaseNode {
             })) => {
                 // Receive information every 5 minutes
                 info!("Received {:?}", info);
-                if let Some(swarm) = &self.swarm {
-                    let mut _swarm: tokio::sync::MutexGuard<'_, libp2p::Swarm<NodeBehaviour>> =
-                        swarm.lock().await;
-                    let behaviour = _swarm.behaviour_mut();
-                    let peer_id = info.public_key.clone().to_peer_id();
+                let behaviour = swarm.behaviour_mut();
+                let peer_id = info.public_key.clone().to_peer_id();
 
-                    for addr in info.listen_addrs {
-                        let addr = format!("{}/p2p/{}", addr, peer_id)
-                            .parse::<Multiaddr>()
-                            .unwrap();
-                        info!("Add peer ID to Kademlia: {}, Address: {}", peer_id, addr);
-                        behaviour.kademlia.add_address(&peer_id, addr);
-                    }
-
-                    info!("Add peer ID to Gossipsub: {}", peer_id);
-                    behaviour.gossipsub.add_explicit_peer(&peer_id);
+                for addr in info.listen_addrs {
+                    let addr = format!("{}/p2p/{}", addr, peer_id)
+                        .parse::<Multiaddr>()
+                        .unwrap();
+                    info!("Add peer ID to Kademlia: {}, Address: {}", peer_id, addr);
+                    behaviour.kademlia.add_address(&peer_id, addr);
                 }
+
+                info!("Add peer ID to Gossipsub: {}", peer_id);
+                behaviour.gossipsub.add_explicit_peer(&peer_id);
             }
 
             SwarmEvent::ConnectionEstablished {
@@ -343,21 +311,17 @@ impl BaseNode {
             } => {
                 info!("Connected established to {} via {:?}", peer_id, endpoint);
 
-                if let Some(swarm) = &self.swarm {
-                    let mut _swarm: tokio::sync::MutexGuard<'_, libp2p::Swarm<NodeBehaviour>> =
-                        swarm.lock().await;
-                    let behaviour = _swarm.behaviour_mut();
-                    let remote_addr = endpoint.get_remote_address().clone();
-                    let addr = format!("{}/p2p/{}", remote_addr, peer_id)
-                        .parse::<Multiaddr>()
-                        .unwrap();
+                let behaviour = swarm.behaviour_mut();
+                let remote_addr = endpoint.get_remote_address().clone();
+                let addr = format!("{}/p2p/{}", remote_addr, peer_id)
+                    .parse::<Multiaddr>()
+                    .unwrap();
 
-                    info!("Add peer ID to Kademlia: {}, Address: {}", peer_id, addr);
-                    behaviour.kademlia.add_address(&peer_id, addr);
+                info!("Add peer ID to Kademlia: {}, Address: {}", peer_id, addr);
+                behaviour.kademlia.add_address(&peer_id, addr);
 
-                    info!("Add peer ID to Gossipsub: {}", peer_id);
-                    behaviour.gossipsub.add_explicit_peer(&peer_id);
-                }
+                info!("Add peer ID to Gossipsub: {}", peer_id);
+                behaviour.gossipsub.add_explicit_peer(&peer_id);
             }
 
             // Add other common event handling logic here...
@@ -369,55 +333,6 @@ impl BaseNode {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::utils::peer_id::seed_phrase_to_bytes;
-
-    // A node holding the given keypair. Built in memory: no keypair file is
-    // read or written.
-    fn node_with_keypair(keypair: Option<Keypair>) -> BaseNode {
-        let mut node = BaseNode::new(NodeConfig {
-            port: 0,
-            bootstrap_address: None,
-            bootstrap_port: 0,
-            bootstrap_peer_id: None,
-            is_bootstrap_node: false,
-            is_bootstrap_started: false,
-            gen_msg: false,
-            listen_address: "127.0.0.1".to_string(),
-            local_test: true,
-        });
-        node.keypair = keypair;
-        node
-    }
-
-    #[tokio::test]
-    async fn test_authorize_peer_accepts_the_relayer_test_identity() {
-        let keypair = generate_keypair(seed_phrase_to_bytes(Some("relayer_test")));
-        let node = node_with_keypair(Some(keypair));
-
-        assert!(node.authorize_peer().await.is_ok());
-    }
-
-    #[tokio::test]
-    async fn test_authorize_peer_rejects_a_random_identity() {
-        let keypair = generate_keypair(None);
-        let peer_id = keypair.public().to_peer_id();
-        let node = node_with_keypair(Some(keypair));
-
-        match node.authorize_peer().await {
-            Err(NodeError::UnauthorizedPeer(id)) => assert_eq!(id, peer_id.to_string()),
-            other => panic!("expected UnauthorizedPeer, got {:?}", other),
-        }
-    }
-
-    #[tokio::test]
-    async fn test_authorize_peer_without_keypair_is_an_error() {
-        let node = node_with_keypair(None);
-
-        assert!(matches!(
-            node.authorize_peer().await,
-            Err(NodeError::ConfigError(_))
-        ));
-    }
 
     #[test]
     fn test_unauthorized_peer_and_peer_error_messages() {
@@ -429,5 +344,154 @@ mod tests {
             NodeError::PeerError("Peer 12D3KooWX not connected".to_string()).to_string(),
             "Peer error: Peer 12D3KooWX not connected"
         );
+    }
+}
+
+/// Two swarms talking over QUIC on loopback, in process, for the tests of
+/// the node's event handlers. Every node is built with `local_test`: a
+/// random identity, and no keypair file read or written.
+#[cfg(test)]
+pub(crate) mod test_support {
+    use super::*;
+    use futures::StreamExt;
+    use libp2p::multiaddr::Protocol;
+    use libp2p::Swarm;
+
+    pub fn test_config(is_bootstrap_node: bool) -> NodeConfig {
+        NodeConfig {
+            port: 0,
+            bootstrap_address: None,
+            bootstrap_port: 0,
+            bootstrap_peer_id: None,
+            is_bootstrap_node,
+            is_bootstrap_started: false,
+            gen_msg: false,
+            listen_address: "127.0.0.1".to_string(),
+            local_test: true,
+            rpc_address: None,
+        }
+    }
+
+    /// A bare swarm, owned by the test, with the node's behaviours.
+    pub async fn bare_swarm() -> Swarm<NodeBehaviour> {
+        let mut node = BaseNode::new(test_config(false));
+        node.init_swarm().await.unwrap();
+        let swarm = node.swarm.take().unwrap();
+        Arc::try_unwrap(swarm)
+            .unwrap_or_else(|_| panic!("a new swarm is not shared"))
+            .into_inner()
+    }
+
+    /// Listens on a new loopback port and returns the address once bound.
+    pub async fn listen(swarm: &mut Swarm<NodeBehaviour>) -> Multiaddr {
+        let listener = swarm
+            .listen_on("/ip4/127.0.0.1/udp/0/quic-v1".parse().unwrap())
+            .unwrap();
+        loop {
+            if let SwarmEvent::NewListenAddr {
+                listener_id,
+                address,
+            } = swarm.select_next_some().await
+            {
+                if listener_id == listener {
+                    return address;
+                }
+            }
+        }
+    }
+
+    /// The addresses Kademlia holds for `peer`, without their `/p2p` part.
+    pub fn kademlia_addresses(swarm: &mut Swarm<NodeBehaviour>, peer: &PeerId) -> Vec<Multiaddr> {
+        let mut addresses = Vec::new();
+        for bucket in swarm.behaviour_mut().kademlia.kbuckets() {
+            for entry in bucket.iter() {
+                if entry.node.key.preimage() == peer {
+                    addresses.extend(entry.node.value.iter().map(|address| {
+                        address
+                            .iter()
+                            .filter(|protocol| !matches!(protocol, Protocol::P2p(_)))
+                            .collect::<Multiaddr>()
+                    }));
+                }
+            }
+        }
+        addresses
+    }
+
+    type Logs = Arc<std::sync::Mutex<Vec<String>>>;
+
+    std::thread_local! {
+        static SINK: std::cell::RefCell<Option<Logs>> = const { std::cell::RefCell::new(None) };
+    }
+
+    /// Stops the capture of this thread when dropped.
+    pub struct CaptureGuard;
+
+    impl Drop for CaptureGuard {
+        fn drop(&mut self) {
+            SINK.with(|sink| sink.borrow_mut().take());
+        }
+    }
+
+    /// The messages of the events logged on this thread while the returned
+    /// guard lives. The tests run on tokio's current-thread runtime, so the
+    /// node's handlers log on the test's thread.
+    ///
+    /// One global subscriber serves every test: a subscriber set per thread
+    /// would miss the call sites another thread reached first, since tracing
+    /// caches whether a call site is enabled across threads.
+    pub fn capture_logs() -> (Logs, CaptureGuard) {
+        use tracing_subscriber::layer::SubscriberExt;
+        static GLOBAL: std::sync::Once = std::sync::Once::new();
+
+        GLOBAL.call_once(|| {
+            tracing::subscriber::set_global_default(tracing_subscriber::registry().with(Capture))
+                .expect("no other global subscriber in the tests");
+        });
+        let logs = Logs::default();
+        SINK.with(|sink| *sink.borrow_mut() = Some(Arc::clone(&logs)));
+        (logs, CaptureGuard)
+    }
+
+    pub fn logged(logs: &std::sync::Mutex<Vec<String>>, prefix: &str) -> bool {
+        logs.lock()
+            .unwrap()
+            .iter()
+            .any(|message| message.starts_with(prefix))
+    }
+
+    struct Capture;
+
+    struct Message(String);
+
+    impl tracing::field::Visit for Message {
+        fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+            if field.name() == "message" {
+                self.0 = format!("{:?}", value);
+            }
+        }
+    }
+
+    impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for Capture {
+        fn on_event(
+            &self,
+            event: &tracing::Event<'_>,
+            _ctx: tracing_subscriber::layer::Context<'_, S>,
+        ) {
+            // Only this crate's info and above, as the smoke test reads them.
+            let metadata = event.metadata();
+            if !metadata.target().starts_with("validator_node")
+                || *metadata.level() > tracing::Level::INFO
+            {
+                return;
+            }
+            SINK.with(|sink| {
+                if let Some(logs) = sink.borrow().as_ref() {
+                    let mut message = Message(String::new());
+                    event.record(&mut message);
+                    logs.lock().unwrap().push(message.0);
+                }
+            });
+        }
     }
 }

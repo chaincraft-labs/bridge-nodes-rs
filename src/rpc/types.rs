@@ -16,6 +16,9 @@ pub enum RpcError {
 
     #[error("Distribution failed: {0}")]
     DistributionFailed(String),
+
+    #[error("The relayer is not running")]
+    RelayerStopped,
 }
 
 impl From<RpcError> for ErrorObject<'static> {

@@ -201,7 +201,10 @@ impl ValidatorNode {
 
             _ => {
                 // Handle common events through the base implementation
-                self.base.handle_common_events(event).await;
+                if let Some(swarm) = self.base.swarm.clone() {
+                    let mut swarm = swarm.lock().await;
+                    self.base.handle_common_events(&mut swarm, event).await;
+                }
             }
         }
     }
@@ -209,13 +212,6 @@ impl ValidatorNode {
     pub async fn run(&mut self) -> Result<(), NodeError> {
         info!("🔶 Validator node");
         self.base.init_swarm().await?;
-
-        // if let Err(e) = self.base.authorize_peer().await {
-        //     error!("Authorization failed: {}", e);
-        //     eprintln!("Error: Authorization failed: {}", e);
-        //     std::process::exit(1);
-        // }
-
         self.base.init_network_listener().await?;
         self.base.connect_to_bootstrap().await?;
         self.base.state = NodeState::Connected;
@@ -241,5 +237,141 @@ impl ValidatorNode {
         }
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::node::common::test_support::{bare_swarm, kademlia_addresses, listen, test_config};
+    use futures::StreamExt;
+    use libp2p::Swarm;
+
+    // A validator subscribed to its topic, its swarm shared as `run` shares
+    // it, dialing a peer the test drives.
+    async fn validator_dialing(address: libp2p::Multiaddr) -> ValidatorNode {
+        let mut node = ValidatorNode::new(test_config(false));
+        node.base.init_swarm().await.unwrap();
+        node.init_gossipsub_topic().await.unwrap();
+        node.base
+            .swarm
+            .as_ref()
+            .unwrap()
+            .lock()
+            .await
+            .dial(address)
+            .unwrap();
+        node
+    }
+
+    // Runs the validator's handler on every validator event, never holding
+    // the swarm lock while it does, and hands every peer event, and a tick
+    // every 100 ms, to `step` until it returns true.
+    async fn drive<F>(node: &mut ValidatorNode, peer: &mut Swarm<NodeBehaviour>, mut step: F)
+    where
+        F: FnMut(
+            &mut ValidatorNode,
+            &mut Swarm<NodeBehaviour>,
+            Option<SwarmEvent<NodeBehaviourEvent>>,
+        ) -> bool,
+    {
+        let swarm = Arc::clone(node.base.swarm.as_ref().unwrap());
+        let mut tick = tokio::time::interval(Duration::from_millis(100));
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let (validator_event, peer_event) = {
+                    let mut validator = swarm.lock().await;
+                    tokio::select! {
+                        event = validator.select_next_some() => (Some(event), None),
+                        event = peer.select_next_some() => (None, Some(event)),
+                        _ = tick.tick() => (None, None),
+                    }
+                };
+                if let Some(event) = validator_event {
+                    node.handle_validator_events(event).await;
+                }
+                if step(node, peer, peer_event) {
+                    return;
+                }
+            }
+        })
+        .await
+        .expect("the validator did not handle the peer in time");
+    }
+
+    #[tokio::test]
+    async fn test_validator_answers_a_key_request_with_its_partial_key() {
+        let mut peer = bare_swarm().await;
+        let address = listen(&mut peer).await;
+        let mut node = validator_dialing(address).await;
+        let validator_id = node.base.keypair.as_ref().unwrap().public().to_peer_id();
+
+        let mut answer = None;
+        drive(&mut node, &mut peer, |_, peer, event| {
+            match event {
+                Some(SwarmEvent::ConnectionEstablished { peer_id, .. })
+                    if peer_id == validator_id =>
+                {
+                    peer.behaviour_mut()
+                        .key_exchange
+                        .send_request(&validator_id, PartialKeyRequest { node_index: 3 });
+                }
+                Some(SwarmEvent::Behaviour(NodeBehaviourEvent::KeyExchange(
+                    request_response::Event::Message {
+                        message: request_response::Message::Response { response, .. },
+                        ..
+                    },
+                ))) => answer = Some(response),
+                Some(SwarmEvent::Behaviour(NodeBehaviourEvent::KeyExchange(
+                    request_response::Event::OutboundFailure { error, .. },
+                ))) => panic!("the validator did not answer: {:?}", error),
+                _ => {}
+            }
+            answer.is_some()
+        })
+        .await;
+
+        let answer = answer.unwrap();
+        assert_eq!(answer.node_index, 3);
+        assert_eq!(answer.key_data, vec![3u8; 32]);
+    }
+
+    #[tokio::test]
+    async fn test_validator_counts_each_gossipsub_message() {
+        let mut peer = bare_swarm().await;
+        let address = listen(&mut peer).await;
+        let mut node = validator_dialing(address).await;
+        let topic = gossipsub::IdentTopic::new("custom_events");
+
+        let mut published = false;
+        drive(&mut node, &mut peer, |node, peer, _| {
+            // Publishing fails until the peer learns the validator's topic.
+            if !published {
+                published = peer
+                    .behaviour_mut()
+                    .gossipsub
+                    .publish(topic.clone(), b"hello".to_vec())
+                    .is_ok();
+            }
+            node.base.metrics.messages_received > 0
+        })
+        .await;
+
+        assert_eq!(node.base.metrics.messages_received, 1);
+    }
+
+    #[tokio::test]
+    async fn test_validator_routes_the_peer_it_connected_to() {
+        let mut peer = bare_swarm().await;
+        let peer_id = *peer.local_peer_id();
+        let address = listen(&mut peer).await;
+        let mut node = validator_dialing(address).await;
+
+        drive(&mut node, &mut peer, |node, _, _| {
+            let swarm = Arc::clone(node.base.swarm.as_ref().unwrap());
+            let mut swarm = swarm.try_lock().unwrap();
+            !kademlia_addresses(&mut swarm, &peer_id).is_empty()
+        })
+        .await;
     }
 }

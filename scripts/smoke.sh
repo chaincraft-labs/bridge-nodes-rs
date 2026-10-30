@@ -3,8 +3,9 @@
 #
 # Checks what `cargo test` does not cover: the QUIC connection, gossipsub
 # delivery, and the key exchange triggered through the relayer's JSON-RPC
-# `distribute_keys`. Both nodes run with `--local-test` (random identity), so
-# no keypair file is read or written.
+# `distribute_keys`, and that an idle relayer answers the RPC at once. Both
+# nodes run with `--local-test` (random identity), so no keypair file is read
+# or written.
 #
 # Usage: scripts/smoke.sh [path-to-validator_node]   (default: target/debug/validator_node)
 # Uses UDP ports 62749/62750 and TCP 127.0.0.1:8545. Takes about 40 seconds.
@@ -23,6 +24,19 @@ RELAYER_ID=$(strip_ansi "$LOGDIR/relayer.log" | grep -o "local_peer_id=[A-Za-z0-
 if [ -z "$RELAYER_ID" ]; then
   echo "FAIL: the relayer did not report its peer ID"; strip_ansi "$LOGDIR/relayer.log" | tail -5; wait; exit 1
 fi
+
+# The relayer is alone and idle: an RPC command must still be served at once.
+# The relayer's own ID is a peer it is not connected to.
+printf '{"jsonrpc":"2.0","method":"distribute_keys","params":{"peer_ids":["%s"]},"id":1}' "$RELAYER_ID" \
+  > "$LOGDIR/rpc-idle-body.json"
+IDLE_OUT=$(curl -s -m 2 -X POST -H 'Content-Type: application/json' \
+  --data-binary @"$LOGDIR/rpc-idle-body.json" http://127.0.0.1:8545)
+echo "rpc distribute_keys on the idle relayer: ${IDLE_OUT:-<no answer within 2 s>}"
+IDLE_STATUS=0
+case "$IDLE_OUT" in
+  *"Peer $RELAYER_ID not connected"*) ;;
+  *) IDLE_STATUS=1 ;;
+esac
 
 RUST_LOG=info timeout 32 "$BIN" --validator --local-test --listen-address 127.0.0.1 --port 62750 \
   --bootstrap-address 127.0.0.1 --bootstrap-port 62749 --bootstrap-peer-id "$RELAYER_ID" --gen-msg \
@@ -44,6 +58,7 @@ echo "rpc distribute_keys: ${RPC_OUT:-<no answer>}"
 echo "$RESULTS"
 
 STATUS=0
+if [ "$IDLE_STATUS" != 0 ]; then echo "FAIL: the idle relayer did not answer distribute_keys within 2 seconds"; STATUS=1; fi
 for line in $RESULTS; do
   if [ "${line#*=}" = "0" ]; then echo "FAIL: ${line%%=*}"; STATUS=1; fi
 done

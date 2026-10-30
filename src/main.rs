@@ -1,4 +1,5 @@
 use std::error::Error;
+use std::net::IpAddr;
 use std::path::PathBuf;
 
 use clap::Parser;
@@ -216,6 +217,18 @@ Examples:
 
     #[arg(
         long,
+        help = "JSON-RPC server address [default: 127.0.0.1]",
+        long_help = r#"The IP address the relayer's JSON-RPC server binds, on port 8545. Defaults to 127.0.0.1, so only the relayer's own machine reaches it: the RPC administers the network and has no authentication. Independent of --listen-address. Only applicable for relayer nodes.
+
+Example:
+    # Reach the RPC from another container of the bridge network
+    validator-node --relayer --rpc-address 172.21.0.2"#,
+        value_name = "IP"
+    )]
+    rpc_address: Option<IpAddr>,
+
+    #[arg(
+        long,
         help = "Enable message generation",
         long_help = r#"Enable automatic message generation for testing purposes. Only applicable for validator nodes.
 
@@ -299,6 +312,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
             is_bootstrap_started: false,
             gen_msg: args.gen_msg,
             local_test: args.local_test,
+            rpc_address: None,
         };
         let mut node = ValidatorNode::new(node_config);
         node.run().await?;
@@ -314,6 +328,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
             is_bootstrap_started: false,
             gen_msg: false,
             local_test: args.local_test,
+            rpc_address: args.rpc_address,
         };
         let mut node = RelayerNode::new(node_config);
         node.run().await?;
@@ -322,4 +337,34 @@ async fn main() -> Result<(), Box<dyn Error>> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_rpc_address_is_unset_unless_given() {
+        let args = Args::try_parse_from(["validator_node", "--relayer"]).unwrap();
+        assert_eq!(args.rpc_address, None);
+    }
+
+    #[test]
+    fn test_rpc_address_takes_an_ip() {
+        let args =
+            Args::try_parse_from(["validator_node", "--relayer", "--rpc-address", "172.21.0.2"])
+                .unwrap();
+        assert_eq!(args.rpc_address, Some("172.21.0.2".parse().unwrap()));
+    }
+
+    #[test]
+    fn test_rpc_address_refuses_what_is_not_an_ip() {
+        assert!(Args::try_parse_from([
+            "validator_node",
+            "--relayer",
+            "--rpc-address",
+            "127.0.0.1:8545"
+        ])
+        .is_err());
+    }
 }
