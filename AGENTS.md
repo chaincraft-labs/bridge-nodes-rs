@@ -15,9 +15,10 @@ decentralized bridge whose transfers are validated by threshold signatures
 - **Validators**: nodes an administrator authorized. They join through the
   relayer, then reach each other through Kademlia and gossipsub.
 - **Membership is not open.** Peer IDs are authenticated by the libp2p
-  handshake; the relayer signs the list of authorized peer IDs and
-  distributes it so every node can check who it talks to. The allowlist is
-  work in progress (`feat-restrict-node`): nothing enforces it yet.
+  handshake; by design the relayer signs the list of authorized peer IDs
+  and distributes it so every node can check who it talks to. The signed
+  Merkle tree of authorized peer IDs exists (`src/utils/auth/`), but nothing
+  distributes or enforces it yet.
 
 Layout: `src/main.rs` (CLI), `src/node/` (`common.rs` swarm and shared
 events, `relayer.rs`, `validator.rs`), `src/rpc/` (jsonrpsee server),
@@ -103,5 +104,3 @@ asks for it.
   address.
 - Gossipsub keeps no history: a node that joins late misses the authorized
   list published before it arrived.
-- `README.md` documents CLI flags (`--node`, `--bootstrap`) that no longer
-  exist; the current ones are `--relayer` and `--validator` (`--help`).

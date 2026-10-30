@@ -24,7 +24,6 @@ COPY --from=builder /app/bridge-nodes-rs/target/release/validator_node .
 RUN echo "PS1='[\u@\h \$(hostname -I | awk '\''{print \$1}'\'') \W]\$ '" >> /root/.bashrc
 
 EXPOSE 62649/udp
-EXPOSE 62649
 
 ENV RUST_LOG=info
 CMD ["tail", "-f", "/dev/null"]

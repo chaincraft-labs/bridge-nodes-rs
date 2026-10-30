@@ -2,7 +2,7 @@ use libp2p::identity::Keypair;
 use libp2p::kad::store::MemoryStore;
 use libp2p::kad::Mode;
 use libp2p::request_response::ProtocolSupport;
-use libp2p::{gossipsub, noise, swarm::SwarmEvent, tcp, yamux, Multiaddr, SwarmBuilder};
+use libp2p::{gossipsub, swarm::SwarmEvent, Multiaddr, SwarmBuilder};
 use libp2p::{identify, kad, ping, request_response, PeerId, StreamProtocol};
 use std::hash::{Hash, Hasher};
 use std::num::NonZeroUsize;
@@ -137,12 +137,6 @@ impl BaseNode {
 
         let swarm = SwarmBuilder::with_existing_identity(keypair.clone())
             .with_tokio()
-            .with_tcp(
-                tcp::Config::default(),
-                noise::Config::new,
-                yamux::Config::default,
-            )
-            .map_err(|e| NodeError::ConfigError(e.to_string()))?
             .with_quic()
             .with_dns()
             .map_err(|e| NodeError::ConfigError(e.to_string()))?
