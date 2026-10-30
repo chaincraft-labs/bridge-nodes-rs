@@ -1,13 +1,28 @@
 use libp2p::{
+    allow_block_list::{self, AllowedPeers},
     gossipsub, identify,
     kad::{self, store::MemoryStore},
     ping,
     request_response::{self, json},
-    swarm::NetworkBehaviour,
+    swarm::{behaviour::toggle::Toggle, NetworkBehaviour},
     Multiaddr, PeerId,
 };
 use serde::{Deserialize, Serialize};
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::time::Duration;
+
+/// TCP port of the relayer's JSON-RPC server.
+pub const RPC_PORT: u16 = 8545;
+
+/// Address the JSON-RPC server binds when `--rpc-address` is not given: the
+/// relayer's own machine only, since the RPC administers the network.
+pub const DEFAULT_RPC_ADDRESS: IpAddr = IpAddr::V4(Ipv4Addr::LOCALHOST);
+
+/// The socket the JSON-RPC server binds: the given address, or
+/// `DEFAULT_RPC_ADDRESS`, always on `RPC_PORT`.
+pub fn rpc_bind_address(rpc_address: Option<IpAddr>) -> SocketAddr {
+    SocketAddr::new(rpc_address.unwrap_or(DEFAULT_RPC_ADDRESS), RPC_PORT)
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PartialKeyRequest {
@@ -51,6 +66,9 @@ pub struct NodeConfig {
     pub gen_msg: bool,
     pub listen_address: String,
     pub local_test: bool,
+    /// Address of the relayer's JSON-RPC server (`--rpc-address`); `None`
+    /// means `DEFAULT_RPC_ADDRESS`. Unused by validators.
+    pub rpc_address: Option<IpAddr>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -66,6 +84,10 @@ pub enum NodeState {
 #[behaviour(event_process = false)]
 #[behaviour(out_event = "NodeBehaviourEvent")]
 pub struct NodeBehaviour {
+    // First, so a denied peer is refused before any other behaviour sees the
+    // connection. Enabled on the relayer only: the allowed peers are the ones
+    // it authorized. Validators enforce nothing yet.
+    pub allow_list: Toggle<allow_block_list::Behaviour<AllowedPeers>>,
     pub gossipsub: gossipsub::Behaviour,
     pub kademlia: kad::Behaviour<MemoryStore>,
     pub identify: identify::Behaviour,
@@ -83,6 +105,13 @@ pub enum NodeBehaviourEvent {
     Identify(identify::Event),
     Ping(ping::Event),
     KeyExchange(request_response::Event<PartialKeyRequest, PartialKeyResponse>),
+}
+
+// The allow list emits no event.
+impl From<std::convert::Infallible> for NodeBehaviourEvent {
+    fn from(event: std::convert::Infallible) -> Self {
+        match event {}
+    }
 }
 
 impl From<gossipsub::Event> for NodeBehaviourEvent {
@@ -128,6 +157,9 @@ pub enum NodeError {
 
     #[error("Peer {0} unauthorized")]
     UnauthorizedPeer(String),
+
+    #[error("Authorized peers: {0}")]
+    AuthorizedPeers(String),
 
     #[error("Bootstrap error: {0}")]
     BootstrapError(String),
@@ -219,4 +251,31 @@ pub enum PeerConnectionStatus {
     Disconnected,
     Banned,
     Unknown,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_rpc_binds_loopback_by_default() {
+        assert_eq!(
+            rpc_bind_address(None),
+            "127.0.0.1:8545".parse::<SocketAddr>().unwrap()
+        );
+    }
+
+    #[test]
+    fn test_rpc_address_moves_the_ip_and_keeps_the_port() {
+        let ip: IpAddr = "172.21.0.2".parse().unwrap();
+        assert_eq!(
+            rpc_bind_address(Some(ip)),
+            "172.21.0.2:8545".parse::<SocketAddr>().unwrap()
+        );
+        let ip: IpAddr = "::1".parse().unwrap();
+        assert_eq!(
+            rpc_bind_address(Some(ip)),
+            "[::1]:8545".parse::<SocketAddr>().unwrap()
+        );
+    }
 }
