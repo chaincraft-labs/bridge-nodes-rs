@@ -4,7 +4,7 @@ This module implements a JSON-RPC server that provides a communication interface
 
 ## Features
 
-- Asynchronous RPC server implementation
+- Asynchronous RPC server implementation, over HTTP only (no WebSocket)
 - Key distribution across peer nodes
 - Peer ID validation and parsing
 - Commands handed to the relayer's run loop over a channel, so an idle relayer
@@ -30,6 +30,9 @@ The server answers only a request whose `Host` header is `localhost`,
 Any other `Host` gets HTTP 403. This stops a web page on the relayer's
 machine from reaching the RPC through a DNS name rebound to it. Call the RPC
 by IP (or `localhost`), not by a DNS name.
+
+The server speaks HTTP only. A WebSocket upgrade is refused: browsers apply
+no CORS to WebSocket, so any web page could otherwise open one to the RPC.
 
 ## API Methods
 

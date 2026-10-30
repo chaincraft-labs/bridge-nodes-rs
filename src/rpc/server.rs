@@ -1,7 +1,7 @@
 use jsonrpsee::{
     core::{async_trait, RpcResult},
     proc_macros::rpc,
-    server::{middleware::http::HostFilterLayer, ServerBuilder, ServerHandle},
+    server::{middleware::http::HostFilterLayer, ServerBuilder, ServerConfig, ServerHandle},
 };
 use libp2p::PeerId;
 use std::net::SocketAddr;
@@ -145,8 +145,8 @@ fn allowed_hosts(bound: SocketAddr) -> Vec<String> {
     hosts
 }
 
-/// Starts the JSON-RPC server on `addr` and returns its handle, which stops
-/// the server when dropped, and the address it bound. An unspecified address
+/// Starts the JSON-RPC server, over HTTP only, on `addr` and returns its
+/// handle, which stops the server when dropped, and the address it bound. An unspecified address
 /// (`0.0.0.0`, `::`) is refused: the server answers only requests addressed
 /// to the address it is bound to.
 pub async fn start_rpc_server(
@@ -168,6 +168,9 @@ pub async fn start_rpc_server(
     let bound = listener.local_addr().map_err(|e| failed(&e))?;
     let host_filter = HostFilterLayer::new(allowed_hosts(bound)).map_err(|e| failed(&e))?;
     let server = ServerBuilder::default()
+        // No WebSocket: browsers apply no CORS to it, so any web page could
+        // open one to the loopback RPC and call it.
+        .set_config(ServerConfig::builder().http_only().build())
         .set_http_middleware(tower::ServiceBuilder::new().layer(host_filter))
         .build_from_tcp(listener)
         .map_err(|e| failed(&e))?;
@@ -601,5 +604,45 @@ mod tests {
                 Ok(_) => panic!("{} was bound", addr),
             }
         }
+    }
+
+    #[tokio::test]
+    async fn test_a_websocket_upgrade_is_refused() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let (commands, mut seen) = fake_authority(|| Ok(sample_state()), sample_state());
+        let (handle, bound) = start_rpc_server(commands, "127.0.0.1:0".parse().unwrap())
+            .await
+            .unwrap();
+        // What a page on any site sends: the Host is allowed, the Origin is
+        // not, and browsers apply no CORS to WebSocket.
+        let request = format!(
+            "GET / HTTP/1.1\r\nHost: 127.0.0.1:{}\r\nOrigin: https://evil.example\r\n\
+             Upgrade: websocket\r\nConnection: Upgrade\r\n\
+             Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n",
+            bound.port()
+        );
+        let mut stream = tokio::net::TcpStream::connect(bound).await.unwrap();
+        stream.write_all(request.as_bytes()).await.unwrap();
+        let mut response = vec![0; 1024];
+        let read = tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            stream.read(&mut response),
+        )
+        .await
+        .expect("the server answers the upgrade")
+        .unwrap();
+        let status = String::from_utf8_lossy(&response[..read])
+            .lines()
+            .next()
+            .unwrap_or_default()
+            .to_string();
+
+        assert!(status.starts_with("HTTP/1.1 "), "{}", status);
+        assert!(!status.starts_with("HTTP/1.1 101"), "{}", status);
+        drop(stream);
+        handle.stop().unwrap();
+        handle.stopped().await;
+        assert!(seen.recv().await.is_none(), "nothing reached the relayer");
     }
 }
