@@ -44,7 +44,7 @@ EXAMPLES:
     validator-node --validator \
         --bootstrap-address "192.168.1.100" \
         --bootstrap-peer-id "12D3KooWXXXX..." \
-        --bootstrap-port 62650
+        --bootstrap-port 62649
     
     # Start a validator with custom port and message generation
     validator-node --validator \
@@ -166,13 +166,13 @@ Example:
     #[arg(
         long,
         help = "Bootstrap node port",
-        long_help = r#"The port number of the bootstrap node. Defaults to 62650 for validator nodes.
+        long_help = r#"The port number of the bootstrap node. Defaults to 62649, the relayer's default port.
 
 Example:
     validator-node --validator \
         --bootstrap-address "192.168.1.100" \
         --bootstrap-peer-id "12D3KooWXXXX..." \
-        --bootstrap-port 62650"#,
+        --bootstrap-port 62649"#,
         value_name = "PORT",
         requires = "bootstrap_address"
     )]
@@ -287,13 +287,15 @@ async fn main() -> Result<(), Box<dyn Error>> {
         }
     } else if args.validator {
         const DEFAULT_PORT: u16 = 62650;
+        // The bootstrap node is the relayer, so its default is the relayer's port
+        const DEFAULT_BOOTSTRAP_PORT: u16 = 62649;
         let node_config = NodeConfig {
             listen_address: args.listen_address.unwrap_or("0.0.0.0".to_string()),
             port: args.port.unwrap_or(DEFAULT_PORT),
             is_bootstrap_node: false,
             bootstrap_peer_id: args.bootstrap_peer_id,
             bootstrap_address: args.bootstrap_address,
-            bootstrap_port: args.bootstrap_port.unwrap_or(DEFAULT_PORT),
+            bootstrap_port: args.bootstrap_port.unwrap_or(DEFAULT_BOOTSTRAP_PORT),
             is_bootstrap_started: false,
             gen_msg: args.gen_msg,
             local_test: args.local_test,
