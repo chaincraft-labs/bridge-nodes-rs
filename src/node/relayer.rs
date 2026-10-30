@@ -496,7 +496,15 @@ mod tests {
 
     #[tokio::test]
     async fn test_run_loop_survives_a_caller_that_left() {
+        let (logs, _guard) = capture_logs();
         let (commands, _task) = spawn_idle_loop(idle_relayer().await);
+        let left = "The RPC caller left before the relayer answered";
+
+        // A caller that waits for its answer is no news.
+        assert!(ask_distribute_keys(&commands, vec![random_peer()])
+            .await
+            .is_err());
+        assert!(!logged(&logs, left));
 
         let (reply, answer) = oneshot::channel();
         drop(answer);
@@ -511,6 +519,7 @@ mod tests {
         assert!(ask_distribute_keys(&commands, vec![random_peer()])
             .await
             .is_err());
+        assert!(logged(&logs, left));
     }
 
     #[tokio::test]
@@ -929,5 +938,27 @@ mod tests {
             !relayer.is_connected(&peer_id) && logged(&logs, &closed)
         })
         .await;
+    }
+
+    #[tokio::test]
+    async fn test_only_a_denial_by_the_allow_list_is_logged_as_unauthorized() {
+        let (logs, _guard) = capture_logs();
+        let mut node = idle_relayer().await;
+        let mut swarm = node.take_swarm().unwrap();
+        let peer = random_peer();
+        // A denial for another cause than the allow list's.
+        let event = SwarmEvent::IncomingConnectionError {
+            connection_id: libp2p::swarm::ConnectionId::new_unchecked(0),
+            local_addr: "/ip4/127.0.0.1/udp/1/quic-v1".parse().unwrap(),
+            send_back_addr: "/ip4/127.0.0.1/udp/2/quic-v1".parse().unwrap(),
+            error: ListenError::Denied {
+                cause: libp2p::swarm::ConnectionDenied::new(std::io::Error::other("limit")),
+            },
+            peer_id: Some(peer),
+        };
+
+        node.handle_relayer_events(&mut swarm, event).await;
+
+        assert!(!logged(&logs, "Denied a connection from unauthorized peer"));
     }
 }
