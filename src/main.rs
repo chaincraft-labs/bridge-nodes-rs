@@ -218,7 +218,7 @@ Examples:
     #[arg(
         long,
         help = "JSON-RPC server address [default: 127.0.0.1]",
-        long_help = r#"The IP address the relayer's JSON-RPC server binds, on port 8545. Defaults to 127.0.0.1, so only the relayer's own machine reaches it: the RPC administers the network and has no authentication. Independent of --listen-address. Only applicable for relayer nodes.
+        long_help = r#"The IP address the relayer's JSON-RPC server binds, on port 8545. Defaults to 127.0.0.1, so only the relayer's own machine reaches it: the RPC administers the network and has no authentication. It must be a specific address (0.0.0.0 and :: are refused), and the server answers only requests whose Host is that address, localhost, 127.0.0.1 or [::1]. Independent of --listen-address. Only applicable for relayer nodes.
 
 Example:
     # Reach the RPC from another container of the bridge network

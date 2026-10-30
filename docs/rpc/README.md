@@ -24,6 +24,13 @@ authentication, so expose it on purpose only, with `--rpc-address <IP>`:
 The port stays 8545. `--rpc-address` does not change the P2P listen address
 (`--listen-address`).
 
+The address must be a specific one: `0.0.0.0` and `::` are refused at start.
+The server answers only a request whose `Host` header is `localhost`,
+`127.0.0.1` or `[::1]`, or the address it is bound to, each with port 8545.
+Any other `Host` gets HTTP 403. This stops a web page on the relayer's
+machine from reaching the RPC through a DNS name rebound to it. Call the RPC
+by IP (or `localhost`), not by a DNS name.
+
 ## API Methods
 
 ### distribute_keys

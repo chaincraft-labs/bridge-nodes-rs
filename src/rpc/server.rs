@@ -1,7 +1,7 @@
 use jsonrpsee::{
     core::{async_trait, RpcResult},
     proc_macros::rpc,
-    server::{ServerBuilder, ServerHandle},
+    server::{middleware::http::HostFilterLayer, ServerBuilder, ServerHandle},
 };
 use libp2p::PeerId;
 use std::net::SocketAddr;
@@ -128,19 +128,49 @@ impl RpcApiServer for RpcServerImpl {
     }
 }
 
+/// The `Host` headers the server answers: the loopback names and the address
+/// it is bound to, each on its port. A page that reaches the server through a
+/// DNS name rebound to this machine sends that name, and is refused.
+fn allowed_hosts(bound: SocketAddr) -> Vec<String> {
+    let port = bound.port();
+    let mut hosts = vec![
+        format!("localhost:{}", port),
+        format!("127.0.0.1:{}", port),
+        format!("[::1]:{}", port),
+    ];
+    let own = bound.to_string();
+    if !hosts.contains(&own) {
+        hosts.push(own);
+    }
+    hosts
+}
+
 /// Starts the JSON-RPC server on `addr` and returns its handle, which stops
-/// the server when dropped, and the address it bound.
+/// the server when dropped, and the address it bound. An unspecified address
+/// (`0.0.0.0`, `::`) is refused: the server answers only requests addressed
+/// to the address it is bound to.
 pub async fn start_rpc_server(
     commands: CommandSender,
     addr: SocketAddr,
 ) -> Result<(ServerHandle, SocketAddr), NodeError> {
+    let failed = |e: &dyn std::fmt::Display| {
+        NodeError::ConfigError(format!("Failed to build RPC server: {}", e))
+    };
+    if addr.ip().is_unspecified() {
+        return Err(failed(&format!(
+            "{} is not a specific address; give the IP clients call",
+            addr.ip()
+        )));
+    }
+
+    let listener = std::net::TcpListener::bind(addr).map_err(|e| failed(&e))?;
+    listener.set_nonblocking(true).map_err(|e| failed(&e))?;
+    let bound = listener.local_addr().map_err(|e| failed(&e))?;
+    let host_filter = HostFilterLayer::new(allowed_hosts(bound)).map_err(|e| failed(&e))?;
     let server = ServerBuilder::default()
-        .build(addr)
-        .await
-        .map_err(|e| NodeError::ConfigError(format!("Failed to build RPC server: {}", e)))?;
-    let bound = server
-        .local_addr()
-        .map_err(|e| NodeError::ConfigError(format!("Failed to build RPC server: {}", e)))?;
+        .set_http_middleware(tower::ServiceBuilder::new().layer(host_filter))
+        .build_from_tcp(listener)
+        .map_err(|e| failed(&e))?;
 
     let handle = server.start(RpcServerImpl::new(commands).into_rpc());
     info!("RPC server started on {}", bound);
@@ -474,5 +504,102 @@ mod tests {
         assert_eq!(seen.recv().await.unwrap(), Asked::Authorize(vec![peer]));
         assert_eq!(seen.recv().await.unwrap(), Asked::Revoke(vec![peer]));
         assert_eq!(seen.recv().await.unwrap(), Asked::List);
+    }
+
+    // Posts an authorize_node call with the given Host header, over raw
+    // HTTP, and returns the status line.
+    async fn post_with_host(bound: SocketAddr, host: &str, peer: &PeerId) -> String {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let body = format!(
+            r#"{{"jsonrpc":"2.0","method":"authorize_node","params":{{"peer_ids":["{}"]}},"id":1}}"#,
+            peer
+        );
+        let request = format!(
+            "POST / HTTP/1.1\r\nHost: {}\r\nContent-Type: application/json\r\n\
+             Content-Length: {}\r\nConnection: close\r\n\r\n{}",
+            host,
+            body.len(),
+            body
+        );
+        let mut stream = tokio::net::TcpStream::connect(bound).await.unwrap();
+        stream.write_all(request.as_bytes()).await.unwrap();
+        let mut response = String::new();
+        stream.read_to_string(&mut response).await.unwrap();
+        response.lines().next().unwrap_or_default().to_string()
+    }
+
+    #[tokio::test]
+    async fn test_a_rebound_host_is_refused_and_reaches_no_relayer() {
+        let (commands, mut seen) = fake_authority(|| Ok(sample_state()), sample_state());
+        let (handle, bound) = start_rpc_server(commands, "127.0.0.1:0".parse().unwrap())
+            .await
+            .unwrap();
+
+        for host in [
+            format!("rebind.attacker.example:{}", bound.port()),
+            "rebind.attacker.example".to_string(),
+            // The right name on another port is another origin.
+            format!("localhost:{}", bound.port() + 1),
+        ] {
+            let status = post_with_host(bound, &host, &random_peer()).await;
+            assert!(status.starts_with("HTTP/1.1 403"), "{}: {}", host, status);
+        }
+
+        handle.stop().unwrap();
+        handle.stopped().await;
+        assert!(seen.recv().await.is_none(), "nothing reached the relayer");
+    }
+
+    #[tokio::test]
+    async fn test_the_loopback_names_are_served() {
+        let (commands, mut seen) = fake_authority(|| Ok(sample_state()), sample_state());
+        let (_handle, bound) = start_rpc_server(commands, "127.0.0.1:0".parse().unwrap())
+            .await
+            .unwrap();
+
+        for name in ["localhost", "127.0.0.1", "[::1]"] {
+            let peer = random_peer();
+            let host = format!("{}:{}", name, bound.port());
+            let status = post_with_host(bound, &host, &peer).await;
+            assert!(status.starts_with("HTTP/1.1 200"), "{}: {}", host, status);
+            assert_eq!(seen.recv().await.unwrap(), Asked::Authorize(vec![peer]));
+        }
+    }
+
+    #[test]
+    fn test_the_allowed_hosts_are_loopback_and_the_bound_address() {
+        let bound: SocketAddr = "172.21.0.2:8545".parse().unwrap();
+        assert_eq!(
+            allowed_hosts(bound),
+            vec![
+                "localhost:8545",
+                "127.0.0.1:8545",
+                "[::1]:8545",
+                "172.21.0.2:8545"
+            ]
+        );
+        let loopback: SocketAddr = "127.0.0.1:8545".parse().unwrap();
+        assert_eq!(
+            allowed_hosts(loopback),
+            vec!["localhost:8545", "127.0.0.1:8545", "[::1]:8545"]
+        );
+    }
+
+    #[tokio::test]
+    async fn test_an_unspecified_address_is_refused() {
+        for addr in ["0.0.0.0:0", "[::]:0"] {
+            let (commands, _seen) = fake_authority(|| Ok(sample_state()), sample_state());
+            match start_rpc_server(commands, addr.parse().unwrap()).await {
+                Err(NodeError::ConfigError(message)) => assert!(
+                    message.starts_with("Failed to build RPC server: ")
+                        && message.contains("is not a specific address"),
+                    "{}",
+                    message
+                ),
+                Err(other) => panic!("expected ConfigError, got {:?}", other),
+                Ok(_) => panic!("{} was bound", addr),
+            }
+        }
     }
 }
