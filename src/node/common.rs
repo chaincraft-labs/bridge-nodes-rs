@@ -295,20 +295,29 @@ impl BaseNode {
             }
 
             SwarmEvent::Behaviour(NodeBehaviourEvent::Identify(identify::Event::Received {
+                peer_id,
                 info,
                 ..
             })) => {
-                // Receive information every 5 minutes
+                // Receive information every 5 minutes. The addresses come from
+                // the peer: untrusted. `peer_id` is the one the connection
+                // authenticated.
                 info!("Received {:?}", info);
                 let behaviour = swarm.behaviour_mut();
-                let peer_id = info.public_key.clone().to_peer_id();
 
                 for addr in info.listen_addrs {
-                    let addr = format!("{}/p2p/{}", addr, peer_id)
-                        .parse::<Multiaddr>()
-                        .unwrap();
-                    info!("Add peer ID to Kademlia: {}, Address: {}", peer_id, addr);
-                    behaviour.kademlia.add_address(&peer_id, addr);
+                    match addr.with_p2p(peer_id) {
+                        Ok(addr) => {
+                            info!("Add peer ID to Kademlia: {}, Address: {}", peer_id, addr);
+                            behaviour.kademlia.add_address(&peer_id, addr);
+                        }
+                        Err(addr) => {
+                            warn!(
+                                "Ignored address {} from {}: it names another peer",
+                                addr, peer_id
+                            );
+                        }
+                    }
                 }
 
                 info!("Add peer ID to Gossipsub: {}", peer_id);
@@ -321,13 +330,18 @@ impl BaseNode {
                 info!("Connected established to {} via {:?}", peer_id, endpoint);
 
                 let behaviour = swarm.behaviour_mut();
-                let remote_addr = endpoint.get_remote_address().clone();
-                let addr = format!("{}/p2p/{}", remote_addr, peer_id)
-                    .parse::<Multiaddr>()
-                    .unwrap();
-
-                info!("Add peer ID to Kademlia: {}, Address: {}", peer_id, addr);
-                behaviour.kademlia.add_address(&peer_id, addr);
+                match endpoint.get_remote_address().clone().with_p2p(peer_id) {
+                    Ok(addr) => {
+                        info!("Add peer ID to Kademlia: {}, Address: {}", peer_id, addr);
+                        behaviour.kademlia.add_address(&peer_id, addr);
+                    }
+                    Err(addr) => {
+                        warn!(
+                            "Ignored address {} of {}: it names another peer",
+                            addr, peer_id
+                        );
+                    }
+                }
 
                 info!("Add peer ID to Gossipsub: {}", peer_id);
                 behaviour.gossipsub.add_explicit_peer(&peer_id);
@@ -342,6 +356,124 @@ impl BaseNode {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::node::common::test_support::{bare_swarm, kademlia_addresses, test_config};
+    use libp2p::multiaddr::Protocol;
+    use libp2p::swarm::ConnectionId;
+
+    // A listen address whose DNS name holds a `/`: it decodes from bytes,
+    // and does not parse back from its string form.
+    fn slash_in_name() -> Multiaddr {
+        Multiaddr::empty()
+            .with(Protocol::Dns4("a/b".into()))
+            .with(Protocol::Udp(1))
+            .with(Protocol::QuicV1)
+    }
+
+    fn identified(peer: &Keypair, listen_addrs: Vec<Multiaddr>) -> SwarmEvent<NodeBehaviourEvent> {
+        SwarmEvent::Behaviour(NodeBehaviourEvent::Identify(identify::Event::Received {
+            connection_id: ConnectionId::new_unchecked(0),
+            peer_id: peer.public().to_peer_id(),
+            info: identify::Info {
+                public_key: peer.public(),
+                protocol_version: "chaincraft-p2p/1.0.0".to_string(),
+                agent_version: String::new(),
+                listen_addrs,
+                protocols: Vec::new(),
+                observed_addr: Multiaddr::empty(),
+                signed_peer_record: None,
+            },
+        }))
+    }
+
+    #[tokio::test]
+    async fn test_an_unparsable_identify_address_does_not_crash_the_node() {
+        assert!(slash_in_name().to_string().parse::<Multiaddr>().is_err());
+        let mut node = BaseNode::new(test_config(false));
+        let mut swarm = bare_swarm().await;
+        let peer = Keypair::generate_ed25519();
+        let peer_id = peer.public().to_peer_id();
+        let plain: Multiaddr = "/ip4/127.0.0.1/udp/2/quic-v1".parse().unwrap();
+
+        node.handle_common_events(
+            &mut swarm,
+            identified(&peer, vec![slash_in_name(), plain.clone()]),
+        )
+        .await;
+
+        let known = kademlia_addresses(&mut swarm, &peer_id);
+        assert!(known.contains(&slash_in_name()), "{:?}", known);
+        assert!(known.contains(&plain), "{:?}", known);
+    }
+
+    #[tokio::test]
+    async fn test_an_identify_address_naming_another_peer_is_ignored() {
+        let mut node = BaseNode::new(test_config(false));
+        let mut swarm = bare_swarm().await;
+        let peer = Keypair::generate_ed25519();
+        let peer_id = peer.public().to_peer_id();
+        let other = Keypair::generate_ed25519().public().to_peer_id();
+        let foreign: Multiaddr = format!("/ip4/127.0.0.1/udp/3/quic-v1/p2p/{}", other)
+            .parse()
+            .unwrap();
+        let own: Multiaddr = format!("/ip4/127.0.0.1/udp/4/quic-v1/p2p/{}", peer_id)
+            .parse()
+            .unwrap();
+
+        node.handle_common_events(&mut swarm, identified(&peer, vec![foreign, own]))
+            .await;
+
+        let known = kademlia_addresses(&mut swarm, &peer_id);
+        assert_eq!(
+            known,
+            vec!["/ip4/127.0.0.1/udp/4/quic-v1".parse::<Multiaddr>().unwrap()]
+        );
+        assert!(kademlia_addresses(&mut swarm, &other).is_empty());
+    }
+
+    fn connected(peer_id: PeerId, send_back_addr: Multiaddr) -> SwarmEvent<NodeBehaviourEvent> {
+        SwarmEvent::ConnectionEstablished {
+            peer_id,
+            connection_id: ConnectionId::new_unchecked(0),
+            endpoint: libp2p::core::ConnectedPoint::Listener {
+                local_addr: "/ip4/127.0.0.1/udp/9/quic-v1".parse().unwrap(),
+                send_back_addr,
+            },
+            num_established: std::num::NonZeroU32::new(1).unwrap(),
+            concurrent_dial_errors: None,
+            established_in: Duration::from_millis(1),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_a_connection_address_is_routed_without_a_string_round_trip() {
+        let mut node = BaseNode::new(test_config(false));
+        let mut swarm = bare_swarm().await;
+        let peer_id = Keypair::generate_ed25519().public().to_peer_id();
+
+        node.handle_common_events(&mut swarm, connected(peer_id, slash_in_name()))
+            .await;
+
+        assert_eq!(
+            kademlia_addresses(&mut swarm, &peer_id),
+            vec![slash_in_name()]
+        );
+    }
+
+    #[tokio::test]
+    async fn test_a_connection_address_naming_another_peer_is_ignored() {
+        let mut node = BaseNode::new(test_config(false));
+        let mut swarm = bare_swarm().await;
+        let peer_id = Keypair::generate_ed25519().public().to_peer_id();
+        let other = Keypair::generate_ed25519().public().to_peer_id();
+        let foreign = Multiaddr::empty()
+            .with(Protocol::Ip4([127, 0, 0, 1].into()))
+            .with(Protocol::P2p(other));
+
+        node.handle_common_events(&mut swarm, connected(peer_id, foreign))
+            .await;
+
+        assert!(kademlia_addresses(&mut swarm, &peer_id).is_empty());
+    }
 
     #[test]
     fn test_unauthorized_peer_and_peer_error_messages() {
