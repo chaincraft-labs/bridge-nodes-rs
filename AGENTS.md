@@ -27,9 +27,9 @@ events, `relayer.rs`, `validator.rs`, `authorized.rs` the relayer's
 authorized peers and their file), `src/rpc/` (jsonrpsee server, documented in
 `docs/rpc/README.md`), `src/types/` (behaviour, events, config, errors),
 `src/utils/auth/` (the signed Merkle tree), `src/utils/peer_id.rs`
-(identities and the keypair file), `scripts/` (`smoke.sh`, and
-`run-relayer.sh`, which starts one relayer for an agent that tests the
-running node).
+(identities and the keypair file), `scripts/` (`smoke.sh`; `run-relayer.sh`
+and `run-network.sh`, which start one relayer, or a relayer and a validator
+it authorized, for an agent that tests the running nodes).
 
 ## Build and verify
 
@@ -95,9 +95,12 @@ leave the invariant as it is and report the conflict.
    0600, written to a temporary file and then renamed. It reads it at start:
    no file means no authorized peer, and a file that does not parse, is not
    signed by the relayer's key or whose peers do not match its root stops
-   the relayer and is left as it is. No test pins the JSON encoding yet: a
-   change to `AuthorizedPeersTree` or `MerkleProof` changes the file, so a
-   relayer that stored one before would refuse to start.
+   the relayer and is left as it is. Files written by earlier versions must
+   still load: `test_authorized_peers_file_format_is_stable` and
+   `test_existing_authorized_peers_file_is_read_back` pin it, against
+   `src/node/testdata/authorized_peers.json`. The serde encoding of
+   `AuthorizedPeersTree` and `MerkleProof` is this file's format: another
+   encoding, for the network for instance, is another type.
 
 ## Rules
 
