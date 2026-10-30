@@ -10,20 +10,26 @@ decentralized bridge whose transfers are validated by threshold signatures
 (MPC TSS) computed across the nodes. The TSS part does not exist yet.
 
 - **Relayer**: the bootstrap node and the network's administrator. It is the
-  only node on day one, runs the JSON-RPC server (`<listen-address>:8545`) and
-  decides who may join.
+  only node on day one, runs the JSON-RPC server (`127.0.0.1:8545` by
+  default, `--rpc-address <IP>` to change the IP) and decides who may join.
 - **Validators**: nodes an administrator authorized. They join through the
   relayer, then reach each other through Kademlia and gossipsub.
 - **Membership is not open.** Peer IDs are authenticated by the libp2p
-  handshake; by design the relayer signs the list of authorized peer IDs
-  and distributes it so every node can check who it talks to. The signed
-  Merkle tree of authorized peer IDs exists (`src/utils/auth/`), but nothing
-  distributes or enforces it yet.
+  handshake. The relayer keeps a Merkle tree of the authorized peer IDs,
+  signed with its key; an administrator edits it over the RPC
+  (`authorize_node`, `revoke_node`, `authorized_nodes`), and the relayer
+  denies a connection from any peer not in it. By design the relayer also
+  distributes the signed tree so every node can check who it talks to: that
+  part does not exist yet, and validators enforce nothing.
 
 Layout: `src/main.rs` (CLI), `src/node/` (`common.rs` swarm and shared
-events, `relayer.rs`, `validator.rs`), `src/rpc/` (jsonrpsee server),
-`src/types/` (behaviour, events, config, errors), `src/utils/peer_id.rs`
-(identities and the keypair file).
+events, `relayer.rs`, `validator.rs`, `authorized.rs` the relayer's
+authorized peers and their file), `src/rpc/` (jsonrpsee server, documented in
+`docs/rpc/README.md`), `src/types/` (behaviour, events, config, errors),
+`src/utils/auth/` (the signed Merkle tree), `src/utils/peer_id.rs`
+(identities and the keypair file), `scripts/` (`smoke.sh`, and
+`run-relayer.sh`, which starts one relayer for an agent that tests the
+running node).
 
 ## Build and verify
 
@@ -34,14 +40,18 @@ cargo clippy --all-targets --all-features -- -D warnings
 cargo test --all-features
 cargo deny check bans licenses sources
 cargo deny check advisories
-scripts/smoke.sh            # after `cargo build`; about 40 seconds
+scripts/smoke.sh            # after `cargo build`; about 20 seconds
 ```
 
-`cargo test` covers identities, the keypair file and pure logic only. It
-starts no node. Any change to the swarm, the behaviours, the event loops or
-the RPC must also pass `scripts/smoke.sh`, which runs a relayer and a
-validator on loopback and checks the connection, gossipsub delivery and the
-key exchange triggered over RPC.
+`cargo test` covers identities, the files under `$HOME/.chaincraft`, the
+RPC's HTTP handling, and the relayer's and validator's event handling
+against in-process test peers. It never runs the binary. Any change to the
+swarm, the behaviours, the event loops or the RPC must also pass
+`scripts/smoke.sh`, which runs a relayer, an authorized validator and an
+outsider on loopback. It checks that an idle relayer answers the RPC at
+once, the connection, gossipsub delivery, the key exchange triggered over
+RPC, that the relayer denies the outsider, and that `revoke_node` cuts the
+validator off.
 
 The toolchain is pinned in `rust-toolchain.toml` and must match the builder
 image in `Dockerfile`: change both together.
@@ -68,15 +78,37 @@ leave the invariant as it is and report the conflict.
    Kademlia protocol `/ipfs/kad/1.0.0`. Change one only together with a
    version bump of that protocol.
 4. **Default ports.** P2P on UDP 62649 (relayer) and 62650 (validator); RPC on
-   TCP 8545.
+   TCP 8545, bound to `127.0.0.1` unless `--rpc-address` says otherwise.
+5. **The signed tree of authorized peers.** A leaf is
+   `blake3(0x00 || peer ID bytes)`, a parent `blake3(0x01 || left || right)`,
+   an unpaired node is carried up unchanged, and the root of the empty tree
+   is 32 zero bytes. The relayer signs
+   `"chaincraft/authorized-peers/v1" || root || timestamp` (i64, big endian),
+   and every tree it signs has a greater timestamp than the one before,
+   across restarts. `test_root_follows_the_documented_layout`,
+   `test_known_answer_root_over_the_test_seeds` and
+   `test_signed_message_is_tag_root_then_big_endian_timestamp` pin it. Once
+   the tree is distributed, this is a wire format too.
+6. **The authorized peers file.** Outside `--local-test`, the relayer keeps
+   its current tree in `$HOME/.chaincraft/authorized_peers.json`, the JSON
+   encoding of `AuthorizedPeersTree`, directory mode 0700 and file mode
+   0600, written to a temporary file and then renamed. It reads it at start:
+   no file means no authorized peer, and a file that does not parse, is not
+   signed by the relayer's key or whose peers do not match its root stops
+   the relayer and is left as it is. No test pins the JSON encoding yet: a
+   change to `AuthorizedPeersTree` or `MerkleProof` changes the file, so a
+   relayer that stored one before would refuse to start.
 
 ## Rules
 
-- **Never touch a real identity.** Tests use `MockUserDirectoryProvider`
-  (a temporary home). Running the binary with `--new-peer-id` overwrites
-  `$HOME/.chaincraft/keypair.key`: run it only with `HOME` set to a
-  temporary directory. Node runs for testing use `--local-test`, which uses
-  a random identity and leaves the file alone.
+- **Never touch a real identity or a real list.** Tests use
+  `MockUserDirectoryProvider` (a temporary home). Running the binary with
+  `--new-peer-id` overwrites `$HOME/.chaincraft/keypair.key`, and a relayer
+  started without `--local-test` reads and writes
+  `$HOME/.chaincraft/authorized_peers.json`: run either only with `HOME`
+  set to a temporary directory, as `scripts/smoke.sh` and
+  `scripts/run-relayer.sh` do. Node runs for testing use `--local-test`,
+  which uses a random identity and reads or writes no file.
 - **English only** in code, comments, docstrings, log messages and commit
   messages.
 - **Formatting is rustfmt's default**, and clippy runs with `-D warnings`. An
@@ -98,9 +130,12 @@ leave the invariant as it is and report the conflict.
 Recorded so they are not mistaken for regressions. Fix one only when the task
 asks for it.
 
-- The run loops hold the swarm lock across `swarm.next().await`, so an RPC
-  call that needs the swarm can wait until the next swarm event.
-- The JSON-RPC server is unauthenticated and listens on the node's listen
-  address.
-- Gossipsub keeps no history: a node that joins late misses the authorized
-  list published before it arrived.
+- The validator's run loop holds the swarm lock across
+  `swarm.next().await`. It serves no RPC today, but a call that needed its
+  swarm would wait until the next swarm event. The relayer's run loop owns
+  its swarm and serves RPC commands through a channel.
+- The JSON-RPC server is unauthenticated, and it authorizes peers: whatever
+  reaches it administers the network. It listens on `127.0.0.1` unless
+  `--rpc-address` says otherwise.
+- Gossipsub keeps no history: a node that joins late misses every message
+  published before it arrived.
