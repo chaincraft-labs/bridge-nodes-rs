@@ -8,14 +8,17 @@ pub struct DistributeKeysParams {
 
 #[derive(Debug, thiserror::Error)]
 pub enum RpcError {
-    #[error("Invalid peer ID format")]
-    InvalidPeerId,
+    #[error("Invalid peer ID: {0}")]
+    InvalidPeerId(String),
 
     #[error("No peers provided")]
     NoPeers,
 
     #[error("Distribution failed: {0}")]
     DistributionFailed(String),
+
+    #[error("Authorization failed: {0}")]
+    AuthorizationFailed(String),
 
     #[error("The relayer is not running")]
     RelayerStopped,

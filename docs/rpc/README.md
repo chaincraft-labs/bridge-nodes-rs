@@ -42,6 +42,69 @@ Initiates the key distribution process to a list of peer nodes.
   connected. ...`; peers before it in the list have already been sent their
   request.
 
+### authorize_node
+
+Authorizes peers: the relayer accepts their connections from then on.
+
+#### Parameters
+
+`peer_ids`: Vector of peer ID strings. It must not be empty, and every ID
+must be valid: one invalid ID rejects the whole call (`Invalid peer ID: <id>`)
+and nothing is applied. `distribute_keys` drops invalid IDs; these methods do
+not.
+
+#### Returns
+
+The authorized peers after the call, as for `authorized_nodes`. Authorizing
+peers that are all authorized already changes nothing: the answer is the
+current state, and no new tree is signed.
+
+### revoke_node
+
+Revokes peers: the relayer closes their connections and refuses new ones.
+
+#### Parameters
+
+`peer_ids`: as for `authorize_node`.
+
+#### Returns
+
+The authorized peers after the call, as for `authorized_nodes`. Revoking
+peers none of which is authorized changes nothing and signs no new tree.
+
+### authorized_nodes
+
+Lists the authorized peers. No parameter.
+
+#### Returns
+
+```json
+{
+  "peer_ids": ["12D3KooWDgCeJ15KaPzEEhV8XJd1xoN7hYBBVLdx8tBPiDgA5Lfo"],
+  "root": "96d9d8012190ad661272a614b24671919d1ac5e11235d34f6300f12c2d04bf7c",
+  "timestamp": 1793343404
+}
+```
+
+- `peer_ids`: the authorized peer IDs, sorted.
+- `root`: the root, in hex, of the Merkle tree over them that the relayer
+  signed with its key.
+- `timestamp`: the timestamp of that tree, in seconds. Every tree the relayer
+  signs carries a timestamp strictly greater than the previous one, across
+  restarts too.
+
+On day one no peer is authorized: the relayer denies every connection until
+the administrator authorizes one.
+
+### Where the list is kept
+
+Outside `--local-test`, the relayer stores its signed tree in
+`$HOME/.chaincraft/authorized_peers.json` (directory mode 0700, file mode
+0600) and loads it at start. A missing file means no authorized peer. A file
+that does not parse, is not signed by the relayer's key, or whose peers do not
+match its signed root stops the relayer with an error. Under `--local-test`
+the file is neither read nor written.
+
 ## RPC request for Key Distribution
 
 ### Start the relayer node
@@ -65,6 +128,14 @@ Initiates the key distribution process to a list of peer nodes.
 ./validator_node --new-peer-id
 # output
 12D3KooWGVHAcxbm7LMsKn4rSv4EtahEAgqxe4kjXNgDCs7EZnFE
+
+# on the relayer: authorize the node before it connects
+curl -X POST -H "Content-Type: application/json" --data '{
+  "jsonrpc": "2.0",
+  "method": "authorize_node",
+  "params": { "peer_ids": ["12D3KooWGVHAcxbm7LMsKn4rSv4EtahEAgqxe4kjXNgDCs7EZnFE"] },
+  "id": 1
+}' http://172.21.0.2:8545
 
 ./validator_node --validator --bootstrap-address 172.21.0.2 --bootstrap-port 62649 --bootstrap-peer-id 12D3KooWSLDSpVvxqdCurqbUXLMGBy3c6yKoW7aDeyNE6hxmvJZV
 ```

@@ -69,18 +69,16 @@ impl AuthorizedPeersTree {
             .collect()
     }
 
-    // Updates the tree with a new list of peers, then signs it
-    pub fn update_tree(
-        &mut self,
-        peers: Vec<PeerId>,
-        keypair: &libp2p::identity::Keypair,
-    ) -> Result<(), Box<dyn std::error::Error>> {
-        // Deduplicates and sorts the peers so that the same set always yields
-        // the same root
-        let mut peers = peers;
-        peers.sort();
-        peers.dedup();
+    // The timestamp of the next signed tree: now, but always strictly after
+    // the previous one, so a receiver can refuse an older tree even when two
+    // updates fall in the same second or the clock went back.
+    fn next_timestamp(previous: i64, now: i64) -> i64 {
+        now.max(previous.saturating_add(1))
+    }
 
+    // The root and the proofs of the tree over `peers`, which must be sorted
+    // and without duplicates.
+    fn build(peers: &[PeerId]) -> ([u8; 32], BTreeMap<PeerId, MerkleProof>) {
         let mut levels: Vec<Vec<[u8; 32]>> = vec![peers.iter().map(Self::hash_leaf).collect()];
         while let Some(level) = levels.last().filter(|level| level.len() > 1) {
             let next = Self::next_level(level);
@@ -107,13 +105,31 @@ impl AuthorizedPeersTree {
             proofs.insert(*peer, proof);
         }
 
-        self.root = levels
+        let root = levels
             .last()
             .and_then(|level| level.first())
             .copied()
             .unwrap_or(EMPTY_ROOT);
+        (root, proofs)
+    }
+
+    // Updates the tree with a new list of peers, then signs it. The timestamp
+    // is strictly greater than the tree's previous one.
+    pub fn update_tree(
+        &mut self,
+        peers: Vec<PeerId>,
+        keypair: &libp2p::identity::Keypair,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        // Deduplicates and sorts the peers so that the same set always yields
+        // the same root
+        let mut peers = peers;
+        peers.sort();
+        peers.dedup();
+
+        let (root, proofs) = Self::build(&peers);
+        self.root = root;
         self.peers = proofs;
-        self.timestamp = Utc::now().timestamp();
+        self.timestamp = Self::next_timestamp(self.timestamp, Utc::now().timestamp());
 
         // Signs the tagged root and timestamp
         self.signature = keypair
@@ -143,6 +159,15 @@ impl AuthorizedPeersTree {
         }
 
         current_hash == self.root
+    }
+
+    // Checks that the root and every proof are those of the tree over the
+    // peers it lists. A signature covers the root only: a tree read from disk
+    // or the network whose peers were edited still carries a valid one.
+    pub fn is_consistent(&self) -> bool {
+        let peers: Vec<PeerId> = self.peers.keys().copied().collect();
+        let (root, proofs) = Self::build(&peers);
+        root == self.root && proofs == self.peers
     }
 
     // Checks the tree's signature
@@ -475,5 +500,87 @@ mod tests {
             blake3::Hash::from(tree.root).to_hex().as_str(),
             KNOWN_ROOT_HEX
         );
+    }
+
+    #[test]
+    fn test_next_timestamp_is_now_unless_the_previous_is_not_older() {
+        assert_eq!(AuthorizedPeersTree::next_timestamp(100, 200), 200);
+        assert_eq!(AuthorizedPeersTree::next_timestamp(199, 200), 200);
+        assert_eq!(AuthorizedPeersTree::next_timestamp(200, 200), 201);
+        assert_eq!(AuthorizedPeersTree::next_timestamp(500, 200), 501);
+        assert_eq!(AuthorizedPeersTree::next_timestamp(i64::MAX, 200), i64::MAX);
+    }
+
+    #[test]
+    fn test_updates_in_the_same_second_get_increasing_timestamps() {
+        let relayer = Keypair::generate_ed25519();
+        let mut tree = AuthorizedPeersTree::new();
+        let mut previous = tree.timestamp;
+        for _ in 0..5 {
+            tree.update_tree(random_peers(2), &relayer).unwrap();
+            assert!(tree.timestamp > previous);
+            assert!(tree.verify_signature(&relayer.public()).unwrap());
+            previous = tree.timestamp;
+        }
+    }
+
+    #[test]
+    fn test_update_after_a_tree_from_the_future_stays_after_it() {
+        let relayer = Keypair::generate_ed25519();
+        let mut tree = AuthorizedPeersTree::new();
+        tree.timestamp = Utc::now().timestamp() + 3600;
+        let future = tree.timestamp;
+
+        tree.update_tree(random_peers(1), &relayer).unwrap();
+
+        assert_eq!(tree.timestamp, future + 1);
+    }
+
+    #[test]
+    fn test_a_built_tree_is_consistent() {
+        let relayer = Keypair::generate_ed25519();
+        for size in SIZES {
+            assert!(tree_over(&random_peers(size), &relayer).is_consistent());
+        }
+    }
+
+    #[test]
+    fn test_a_tree_with_an_edited_peer_list_is_inconsistent() {
+        let relayer = Keypair::generate_ed25519();
+        let tree = tree_over(&random_peers(3), &relayer);
+
+        let mut added = tree.clone();
+        added.peers.insert(
+            PeerId::random(),
+            MerkleProof {
+                path: Vec::new(),
+                position: Vec::new(),
+            },
+        );
+        assert!(!added.is_consistent());
+
+        let mut removed = tree.clone();
+        let first = *removed.peers.keys().next().unwrap();
+        removed.peers.remove(&first);
+        assert!(!removed.is_consistent());
+
+        let mut emptied = tree.clone();
+        emptied.peers.clear();
+        assert!(!emptied.is_consistent());
+    }
+
+    #[test]
+    fn test_a_tree_with_an_edited_root_or_proof_is_inconsistent() {
+        let relayer = Keypair::generate_ed25519();
+        let tree = tree_over(&random_peers(3), &relayer);
+
+        let mut root = tree.clone();
+        root.root[0] ^= 1;
+        assert!(!root.is_consistent());
+
+        let mut proof = tree.clone();
+        let first = *proof.peers.keys().next().unwrap();
+        proof.peers.get_mut(&first).unwrap().position[0] ^= 1;
+        assert!(!proof.is_consistent());
     }
 }

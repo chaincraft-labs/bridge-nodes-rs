@@ -1,9 +1,10 @@
 use libp2p::{
+    allow_block_list::{self, AllowedPeers},
     gossipsub, identify,
     kad::{self, store::MemoryStore},
     ping,
     request_response::{self, json},
-    swarm::NetworkBehaviour,
+    swarm::{behaviour::toggle::Toggle, NetworkBehaviour},
     Multiaddr, PeerId,
 };
 use serde::{Deserialize, Serialize};
@@ -83,6 +84,10 @@ pub enum NodeState {
 #[behaviour(event_process = false)]
 #[behaviour(out_event = "NodeBehaviourEvent")]
 pub struct NodeBehaviour {
+    // First, so a denied peer is refused before any other behaviour sees the
+    // connection. Enabled on the relayer only: the allowed peers are the ones
+    // it authorized. Validators enforce nothing yet.
+    pub allow_list: Toggle<allow_block_list::Behaviour<AllowedPeers>>,
     pub gossipsub: gossipsub::Behaviour,
     pub kademlia: kad::Behaviour<MemoryStore>,
     pub identify: identify::Behaviour,
@@ -100,6 +105,13 @@ pub enum NodeBehaviourEvent {
     Identify(identify::Event),
     Ping(ping::Event),
     KeyExchange(request_response::Event<PartialKeyRequest, PartialKeyResponse>),
+}
+
+// The allow list emits no event.
+impl From<std::convert::Infallible> for NodeBehaviourEvent {
+    fn from(event: std::convert::Infallible) -> Self {
+        match event {}
+    }
 }
 
 impl From<gossipsub::Event> for NodeBehaviourEvent {
@@ -145,6 +157,9 @@ pub enum NodeError {
 
     #[error("Peer {0} unauthorized")]
     UnauthorizedPeer(String),
+
+    #[error("Authorized peers: {0}")]
+    AuthorizedPeers(String),
 
     #[error("Bootstrap error: {0}")]
     BootstrapError(String),

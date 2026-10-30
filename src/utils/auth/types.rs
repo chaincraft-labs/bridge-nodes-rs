@@ -2,7 +2,7 @@ use libp2p::PeerId;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MerkleProof {
     /// Sibling hashes from the leaf up to the root, one per level where the
     /// node being verified has a sibling.

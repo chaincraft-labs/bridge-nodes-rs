@@ -1,7 +1,9 @@
+use libp2p::allow_block_list::{self, AllowedPeers};
 use libp2p::identity::Keypair;
 use libp2p::kad::store::MemoryStore;
 use libp2p::kad::Mode;
 use libp2p::request_response::ProtocolSupport;
+use libp2p::swarm::behaviour::toggle::Toggle;
 use libp2p::{gossipsub, swarm::SwarmEvent, Multiaddr, SwarmBuilder};
 use libp2p::{identify, kad, ping, request_response, PeerId, StreamProtocol};
 use std::hash::{Hash, Hasher};
@@ -103,6 +105,9 @@ impl BaseNode {
         let kademlia_config = Self::configure_kademlia();
         let request_response_config =
             request_response::Config::default().with_request_timeout(Duration::from_secs(30));
+        // The relayer starts allowing no peer; it allows the authorized ones once
+        // it has loaded them.
+        let enforce_allow_list = self.config.is_bootstrap_node;
 
         let swarm = SwarmBuilder::with_existing_identity(keypair.clone())
             .with_tokio()
@@ -111,6 +116,10 @@ impl BaseNode {
             .map_err(|e| NodeError::ConfigError(e.to_string()))?
             .with_behaviour(|key| {
                 Ok(NodeBehaviour {
+                    allow_list: Toggle::from(
+                        enforce_allow_list
+                            .then(allow_block_list::Behaviour::<AllowedPeers>::default),
+                    ),
                     gossipsub: gossipsub::Behaviour::new(
                         gossipsub::MessageAuthenticity::Signed(key.clone()),
                         gossipsub_config,

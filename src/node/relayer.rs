@@ -1,13 +1,19 @@
 use futures::StreamExt;
+use libp2p::allow_block_list::{self, AllowedPeers};
 use libp2p::identity::Keypair;
 use libp2p::{gossipsub, PeerId, Swarm};
-use libp2p::{request_response, swarm::SwarmEvent};
+use libp2p::{
+    request_response,
+    swarm::{ListenError, SwarmEvent},
+};
 use std::sync::Arc;
 use tokio::sync::{mpsc, oneshot, Mutex};
 use tracing::{error, info, warn};
 
+use super::authorized::{tree_store, AuthorizedNodes, AuthorizedPeers};
 use super::common::{BaseNode, NodeCommon};
 use crate::rpc::start_rpc_server;
+use crate::utils::peer_id::DefaultUserDirectoryProvider;
 use crate::{
     types::{rpc_bind_address, NodeBehaviourEvent, NodeConfig, NodeError, NodeMetrics, NodeState},
     NodeBehaviour,
@@ -24,6 +30,17 @@ pub enum RelayerCommand {
     DistributeKeys {
         peers: Vec<PeerId>,
         reply: oneshot::Sender<Result<(), NodeError>>,
+    },
+    AuthorizeNodes {
+        peers: Vec<PeerId>,
+        reply: oneshot::Sender<Result<AuthorizedNodes, NodeError>>,
+    },
+    RevokeNodes {
+        peers: Vec<PeerId>,
+        reply: oneshot::Sender<Result<AuthorizedNodes, NodeError>>,
+    },
+    AuthorizedNodes {
+        reply: oneshot::Sender<AuthorizedNodes>,
     },
 }
 
@@ -55,13 +72,78 @@ pub fn distribute_keys(
     Ok(())
 }
 
-fn handle_command(swarm: &mut Swarm<NodeBehaviour>, command: RelayerCommand) {
-    match command {
-        RelayerCommand::DistributeKeys { peers, reply } => {
-            if reply.send(distribute_keys(swarm, &peers)).is_err() {
-                warn!("The RPC caller left before distribute_keys answered");
-            }
+fn allow_list(
+    swarm: &mut Swarm<NodeBehaviour>,
+) -> Option<&mut allow_block_list::Behaviour<AllowedPeers>> {
+    swarm.behaviour_mut().allow_list.as_mut()
+}
+
+/// Allows every authorized peer on the swarm. The relayer refuses to run
+/// without its allow list: it would accept any peer.
+fn allow_authorized_peers(
+    swarm: &mut Swarm<NodeBehaviour>,
+    authorized: &AuthorizedPeers,
+) -> Result<(), NodeError> {
+    let allow_list = allow_list(swarm).ok_or_else(|| {
+        NodeError::ConfigError("The relayer's allow list is disabled".to_string())
+    })?;
+    for peer in authorized.peers() {
+        allow_list.allow_peer(*peer);
+    }
+    Ok(())
+}
+
+/// Authorizes `peers` and lets them connect.
+pub fn authorize_nodes(
+    swarm: &mut Swarm<NodeBehaviour>,
+    authorized: &mut AuthorizedPeers,
+    peers: &[PeerId],
+) -> Result<AuthorizedNodes, NodeError> {
+    for peer in authorized.authorize(peers)? {
+        if let Some(allow_list) = allow_list(swarm) {
+            allow_list.allow_peer(peer);
         }
+        info!("Authorized peer {}", peer);
+    }
+    Ok(authorized.state())
+}
+
+/// Revokes `peers`: they may no longer connect, and their connections are
+/// closed.
+pub fn revoke_nodes(
+    swarm: &mut Swarm<NodeBehaviour>,
+    authorized: &mut AuthorizedPeers,
+    peers: &[PeerId],
+) -> Result<AuthorizedNodes, NodeError> {
+    for peer in authorized.revoke(peers)? {
+        // Closes the peer's connections, too.
+        if let Some(allow_list) = allow_list(swarm) {
+            allow_list.disallow_peer(peer);
+        }
+        info!("Revoked peer {}: its connections are closed", peer);
+    }
+    Ok(authorized.state())
+}
+
+fn handle_command(
+    swarm: &mut Swarm<NodeBehaviour>,
+    authorized: &mut AuthorizedPeers,
+    command: RelayerCommand,
+) {
+    let delivered = match command {
+        RelayerCommand::DistributeKeys { peers, reply } => {
+            reply.send(distribute_keys(swarm, &peers)).is_ok()
+        }
+        RelayerCommand::AuthorizeNodes { peers, reply } => reply
+            .send(authorize_nodes(swarm, authorized, &peers))
+            .is_ok(),
+        RelayerCommand::RevokeNodes { peers, reply } => {
+            reply.send(revoke_nodes(swarm, authorized, &peers)).is_ok()
+        }
+        RelayerCommand::AuthorizedNodes { reply } => reply.send(authorized.state()).is_ok(),
+    };
+    if !delivered {
+        warn!("The RPC caller left before the relayer answered");
     }
 }
 
@@ -208,6 +290,25 @@ impl RelayerNode {
                 }
             }
 
+            SwarmEvent::IncomingConnectionError {
+                peer_id: Some(peer_id),
+                send_back_addr,
+                error: ListenError::Denied { cause },
+                ..
+            } if cause
+                .downcast_ref::<allow_block_list::NotAllowed>()
+                .is_some() =>
+            {
+                warn!(
+                    "Denied a connection from unauthorized peer {} at {}",
+                    peer_id, send_back_addr
+                );
+            }
+
+            SwarmEvent::ConnectionClosed { peer_id, cause, .. } => {
+                info!("Connection closed with {}: {:?}", peer_id, cause);
+            }
+
             _ => {
                 // Handle common events through the base implementation
                 self.base.handle_common_events(swarm, event).await;
@@ -221,6 +322,7 @@ impl RelayerNode {
     async fn run_loop(
         &mut self,
         swarm: &mut Swarm<NodeBehaviour>,
+        authorized: &mut AuthorizedPeers,
         commands: &mut mpsc::Receiver<RelayerCommand>,
     ) -> Result<(), NodeError> {
         while self.base.state != NodeState::Disconnected {
@@ -229,7 +331,7 @@ impl RelayerNode {
                     self.handle_relayer_events(swarm, event).await;
                 }
                 command = commands.recv() => match command {
-                    Some(command) => handle_command(swarm, command),
+                    Some(command) => handle_command(swarm, authorized, command),
                     None => {
                         return Err(NodeError::TaskError(
                             "The RPC command channel closed".to_string(),
@@ -245,17 +347,40 @@ impl RelayerNode {
     pub async fn run(&mut self) -> Result<(), NodeError> {
         info!("🌟 Relayer node");
         self.base.init_swarm().await?;
+        let mut authorized = self.load_authorized_peers()?;
+
         self.base.init_network_listener().await?;
         self.base.state = NodeState::Connected;
         self.init_gossipsub_topic().await?;
 
         let mut swarm = self.take_swarm()?;
+        allow_authorized_peers(&mut swarm, &authorized)?;
         let (commands_tx, mut commands_rx) = mpsc::channel(COMMAND_CHANNEL_CAPACITY);
         // Kept until the loop ends: dropping the handle stops the server.
         let (_rpc_handle, _) =
             start_rpc_server(commands_tx, rpc_bind_address(self.base.config.rpc_address)).await?;
 
-        self.run_loop(&mut swarm, &mut commands_rx).await
+        self.run_loop(&mut swarm, &mut authorized, &mut commands_rx)
+            .await
+    }
+
+    // Before the node listens: a stored list it cannot trust stops it.
+    fn load_authorized_peers(&self) -> Result<AuthorizedPeers, NodeError> {
+        let keypair = self
+            .base
+            .keypair
+            .clone()
+            .ok_or(NodeError::SwarmNotInitialized)?;
+        let store = tree_store(self.base.config.local_test, &DefaultUserDirectoryProvider)?;
+        let authorized = AuthorizedPeers::load(keypair, store)?;
+        let state = authorized.state();
+        info!(
+            "Authorized peers: {} (root {}, timestamp {})",
+            state.peer_ids.len(),
+            state.root,
+            state.timestamp
+        );
+        Ok(authorized)
     }
 }
 
@@ -332,8 +457,11 @@ mod tests {
     ) {
         let (commands_tx, mut commands_rx) = mpsc::channel(COMMAND_CHANNEL_CAPACITY);
         let task = tokio::spawn(async move {
+            let mut authorized = node.load_authorized_peers()?;
             let mut swarm = node.take_swarm()?;
-            node.run_loop(&mut swarm, &mut commands_rx).await
+            allow_authorized_peers(&mut swarm, &authorized)?;
+            node.run_loop(&mut swarm, &mut authorized, &mut commands_rx)
+                .await
         });
         (commands_tx, task)
     }
@@ -415,6 +543,11 @@ mod tests {
         assert!(result.is_ok());
     }
 
+    // Lets `peer` connect, as an authorized peer.
+    fn admit(relayer: &mut Swarm<NodeBehaviour>, peer: PeerId) {
+        allow_list(relayer).unwrap().allow_peer(peer);
+    }
+
     // A relayer listening on loopback and subscribed to its topic, as `run`
     // sets it up, with the swarm in the test's hands.
     async fn listening_relayer() -> (RelayerNode, Swarm<NodeBehaviour>, Multiaddr) {
@@ -465,6 +598,7 @@ mod tests {
         let (mut node, mut relayer, address) = listening_relayer().await;
         let relayer_id = *relayer.local_peer_id();
         let mut peer = bare_swarm().await;
+        admit(&mut relayer, *peer.local_peer_id());
         peer.dial(address).unwrap();
 
         let mut answer = None;
@@ -504,6 +638,7 @@ mod tests {
         // the only one it can learn is the connection's.
         let mut peer = bare_swarm().await;
         let peer_id = *peer.local_peer_id();
+        admit(&mut relayer, *peer.local_peer_id());
         peer.dial(address).unwrap();
 
         drive(&mut node, &mut relayer, &mut peer, |node, relayer, _, _| {
@@ -522,6 +657,7 @@ mod tests {
         let peer_id = *peer.local_peer_id();
         let first = listen(&mut peer).await;
         let second = listen(&mut peer).await;
+        admit(&mut relayer, *peer.local_peer_id());
         peer.dial(address).unwrap();
 
         drive(&mut node, &mut relayer, &mut peer, |_, relayer, _, _| {
@@ -535,6 +671,7 @@ mod tests {
     async fn test_relayer_counts_each_gossipsub_message() {
         let (mut node, mut relayer, address) = listening_relayer().await;
         let mut peer = bare_swarm().await;
+        admit(&mut relayer, *peer.local_peer_id());
         peer.dial(address).unwrap();
         let topic = gossipsub::IdentTopic::new("custom_events");
 
@@ -560,6 +697,7 @@ mod tests {
         let (mut node, mut relayer, address) = listening_relayer().await;
         let mut peer = bare_swarm().await;
         let peer_id = *peer.local_peer_id();
+        admit(&mut relayer, *peer.local_peer_id());
         peer.dial(address).unwrap();
 
         let mut sent = false;
@@ -600,6 +738,7 @@ mod tests {
         let (logs, _guard) = capture_logs();
         let (mut node, mut relayer, address) = listening_relayer().await;
         let mut peer = bare_swarm().await;
+        admit(&mut relayer, *peer.local_peer_id());
         peer.dial(address).unwrap();
 
         // The routing update starts a closest-peers query, and the first
@@ -631,5 +770,164 @@ mod tests {
         })
         .await
         .expect("the relayer did not log its listen address");
+    }
+
+    fn allowed(swarm: &mut Swarm<NodeBehaviour>) -> Vec<PeerId> {
+        let mut peers: Vec<PeerId> = allow_list(swarm)
+            .unwrap()
+            .allowed_peers()
+            .iter()
+            .copied()
+            .collect();
+        peers.sort();
+        peers
+    }
+
+    fn in_memory_authorized() -> AuthorizedPeers {
+        AuthorizedPeers::load(generate_keypair(None), None).unwrap()
+    }
+
+    #[tokio::test]
+    async fn test_a_relayer_allows_no_peer_until_it_loads_its_list() {
+        let mut swarm = idle_relayer().await.take_swarm().unwrap();
+        assert!(allowed(&mut swarm).is_empty());
+
+        let mut authorized = in_memory_authorized();
+        let (a, b) = (random_peer(), random_peer());
+        authorized.authorize(&[a, b]).unwrap();
+        allow_authorized_peers(&mut swarm, &authorized).unwrap();
+
+        let mut expected = vec![a, b];
+        expected.sort();
+        assert_eq!(allowed(&mut swarm), expected);
+    }
+
+    #[tokio::test]
+    async fn test_a_relayer_without_its_allow_list_does_not_run() {
+        // Built as a validator's: the allow list is disabled.
+        let mut swarm = bare_swarm().await;
+        assert!(allow_list(&mut swarm).is_none());
+
+        assert!(matches!(
+            allow_authorized_peers(&mut swarm, &in_memory_authorized()),
+            Err(NodeError::ConfigError(_))
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_authorize_and_revoke_nodes_follow_the_allow_list() {
+        let mut swarm = idle_relayer().await.take_swarm().unwrap();
+        let mut authorized = in_memory_authorized();
+        let (a, b) = (random_peer(), random_peer());
+
+        let state = authorize_nodes(&mut swarm, &mut authorized, &[a, b]).unwrap();
+        assert_eq!(state, authorized.state());
+        assert_eq!(state.peer_ids.len(), 2);
+        let mut expected = vec![a, b];
+        expected.sort();
+        assert_eq!(allowed(&mut swarm), expected);
+
+        let state = revoke_nodes(&mut swarm, &mut authorized, &[a]).unwrap();
+        assert_eq!(state.peer_ids, vec![b.to_string()]);
+        assert_eq!(allowed(&mut swarm), vec![b]);
+
+        assert!(authorize_nodes(&mut swarm, &mut authorized, &[]).is_err());
+        assert!(revoke_nodes(&mut swarm, &mut authorized, &[]).is_err());
+        assert_eq!(allowed(&mut swarm), vec![b]);
+    }
+
+    #[tokio::test]
+    async fn test_the_run_loop_serves_the_authorization_commands() {
+        let (commands, _task) = spawn_idle_loop(idle_relayer().await);
+        let peer = random_peer();
+        async fn ask<T>(
+            commands: &CommandSender,
+            make: impl FnOnce(oneshot::Sender<T>) -> RelayerCommand,
+        ) -> T {
+            let (reply, answer) = oneshot::channel();
+            commands.send(make(reply)).await.unwrap();
+            tokio::time::timeout(Duration::from_secs(2), answer)
+                .await
+                .unwrap()
+                .unwrap()
+        }
+
+        let day_one = ask(&commands, |reply| RelayerCommand::AuthorizedNodes { reply }).await;
+        assert!(day_one.peer_ids.is_empty());
+
+        let added = ask(&commands, |reply| RelayerCommand::AuthorizeNodes {
+            peers: vec![peer],
+            reply,
+        })
+        .await
+        .unwrap();
+        assert_eq!(added.peer_ids, vec![peer.to_string()]);
+        assert!(added.timestamp > day_one.timestamp);
+        assert_eq!(
+            ask(&commands, |reply| RelayerCommand::AuthorizedNodes { reply }).await,
+            added
+        );
+
+        let revoked = ask(&commands, |reply| RelayerCommand::RevokeNodes {
+            peers: vec![peer],
+            reply,
+        })
+        .await
+        .unwrap();
+        assert!(revoked.peer_ids.is_empty());
+        assert!(revoked.timestamp > added.timestamp);
+
+        let refused = ask(&commands, |reply| RelayerCommand::AuthorizeNodes {
+            peers: vec![],
+            reply,
+        })
+        .await;
+        assert!(matches!(refused, Err(NodeError::AuthorizedPeers(_))));
+    }
+
+    #[tokio::test]
+    async fn test_relayer_denies_an_unauthorized_peer_and_logs_it() {
+        let (logs, _guard) = capture_logs();
+        let (mut node, mut relayer, address) = listening_relayer().await;
+        let mut peer = bare_swarm().await;
+        let peer_id = *peer.local_peer_id();
+        peer.dial(address).unwrap();
+        let denial = format!("Denied a connection from unauthorized peer {}", peer_id);
+
+        drive(&mut node, &mut relayer, &mut peer, |_, _, _, _| {
+            logged(&logs, &denial)
+        })
+        .await;
+
+        assert!(!relayer.is_connected(&peer_id));
+        // No behaviour saw the connection: Kademlia learned nothing of it.
+        assert!(kademlia_addresses(&mut relayer, &peer_id).is_empty());
+        assert!(!logged(
+            &logs,
+            &format!("Connected established to {}", peer_id)
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_an_authorized_peer_connects_and_a_revoked_one_is_cut_off() {
+        let (logs, _guard) = capture_logs();
+        let (mut node, mut relayer, address) = listening_relayer().await;
+        let mut authorized = in_memory_authorized();
+        let mut peer = bare_swarm().await;
+        let peer_id = *peer.local_peer_id();
+        authorize_nodes(&mut relayer, &mut authorized, &[peer_id]).unwrap();
+        peer.dial(address).unwrap();
+
+        drive(&mut node, &mut relayer, &mut peer, |_, relayer, _, _| {
+            relayer.is_connected(&peer_id)
+        })
+        .await;
+
+        revoke_nodes(&mut relayer, &mut authorized, &[peer_id]).unwrap();
+        let closed = format!("Connection closed with {}", peer_id);
+        drive(&mut node, &mut relayer, &mut peer, |_, relayer, _, _| {
+            !relayer.is_connected(&peer_id) && logged(&logs, &closed)
+        })
+        .await;
     }
 }
