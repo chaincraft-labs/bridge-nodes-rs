@@ -11,7 +11,7 @@ This project is a Rust-based decentralized bridge node designed to validate tran
   - Kademlia DHT for efficient peer discovery and routing
   - GossipSub for reliable pub/sub message propagation
   - Two node types:
-    - Relayer: the bootstrap node, the network's entry point and administrator, which also serves the JSON-RPC API
+    - Relayer: the bootstrap node, the network's entry point and administrator, which also serves the JSON-RPC API and refuses any peer an administrator has not authorized
     - Validators: nodes that join through the relayer, then handle routing and message propagation
 
 ## Installation
@@ -102,12 +102,28 @@ This project is a Rust-based decentralized bridge node designed to validate tran
 
     # [optional] --port <port> (default is 62649, UDP)
     # [optional] --listen-address <ip> (default is 0.0.0.0)
-    # [optional] --local-test : use a random peer ID and leave the keypair file alone
+    # [optional] --rpc-address <ip> (default is 127.0.0.1) : the JSON-RPC API's address, on port 8545
+    # [optional] --local-test : use a random peer ID, and read or write neither the keypair nor the authorized peers file
     ```
 
-    The relayer logs its peer ID at start (`local_peer_id=...`) and serves the JSON-RPC API on port 8545 (see [docs/rpc](docs/rpc/README.md)).
+    The relayer logs its peer ID at start (`local_peer_id=...`) and serves the JSON-RPC API on `127.0.0.1:8545` (see [docs/rpc](docs/rpc/README.md)). Outside `--local-test`, it keeps the authorized peers in `$HOME/.chaincraft/authorized_peers.json`, so they survive a restart.
 
-2. Start a validator
+2. Authorize the validator
+
+    The relayer refuses any peer it has not authorized. Read the validator's peer ID on its machine (`cargo run -- --read-peer-id`), then authorize it from the relayer's machine:
+
+    ```sh
+    curl -X POST -H "Content-Type: application/json" --data '{
+      "jsonrpc": "2.0",
+      "method": "authorize_node",
+      "params": { "peer_ids": ["<validator peer ID>"] },
+      "id": 1
+    }' http://127.0.0.1:8545
+    ```
+
+    `revoke_node` removes peers and closes their connections, and `authorized_nodes` lists them. A validator started with `--local-test` gets a new random peer ID on every run, so it cannot be authorized beforehand.
+
+3. Start a validator
 
     ```sh
     RUST_LOG=info cargo run -- --validator --bootstrap-address <address> --bootstrap-peer-id <peer_id>
