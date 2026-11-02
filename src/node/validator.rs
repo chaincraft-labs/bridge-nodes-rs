@@ -693,6 +693,29 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_gen_msg_needs_the_swarm_it_publishes_on() {
+        let relayer = random_peer();
+        let mut config = config_for(&relayer);
+        config.gen_msg = true;
+        let mut node = ValidatorNode::new(config).unwrap();
+
+        assert!(matches!(
+            node.publish_blockchain_event().await,
+            Err(NodeError::SwarmNotInitialized)
+        ));
+
+        node.base.init_swarm().await.unwrap();
+        assert!(node.publish_blockchain_event().await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_without_gen_msg_a_validator_publishes_nothing_and_needs_no_swarm() {
+        let mut node = ValidatorNode::new(config_for(&random_peer())).unwrap();
+
+        assert!(node.publish_blockchain_event().await.is_ok());
+    }
+
+    #[tokio::test]
     async fn test_a_validator_without_its_allow_list_does_not_run() {
         let held = HeldTree::new(random_peer()).unwrap();
         let mut swarm = bare_swarm().await;

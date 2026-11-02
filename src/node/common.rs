@@ -568,6 +568,53 @@ mod tests {
         ));
     }
 
+    async fn validator_bootstrapping_from(address: Option<&str>, relayer: &PeerId) -> BaseNode {
+        let mut config = test_config(false);
+        config.bootstrap_peer_id = Some(relayer.to_string());
+        config.bootstrap_address = address.map(str::to_string);
+        config.bootstrap_port = 62649;
+        let mut node = BaseNode::new(config);
+        node.init_swarm().await.unwrap();
+        node
+    }
+
+    #[tokio::test]
+    async fn test_connect_to_bootstrap_routes_the_relayer_at_its_ip_or_dns_address() {
+        let relayer = Keypair::generate_ed25519().public().to_peer_id();
+        for (address, expected) in [
+            ("127.0.0.1", "/ip4/127.0.0.1/udp/62649/quic-v1"),
+            ("relayer.example", "/dns4/relayer.example/udp/62649/quic-v1"),
+        ] {
+            let node = validator_bootstrapping_from(Some(address), &relayer).await;
+
+            node.connect_to_bootstrap().await.unwrap();
+
+            let swarm = Arc::clone(node.swarm.as_ref().unwrap());
+            let known = kademlia_addresses(&mut *swarm.lock().await, &relayer);
+            assert_eq!(known, vec![expected.parse::<Multiaddr>().unwrap()]);
+        }
+    }
+
+    #[tokio::test]
+    async fn test_connect_to_bootstrap_without_an_address_is_a_config_error() {
+        let relayer = Keypair::generate_ed25519().public().to_peer_id();
+        let node = validator_bootstrapping_from(None, &relayer).await;
+
+        assert!(matches!(
+            node.connect_to_bootstrap().await,
+            Err(NodeError::ConfigError(message)) if message == "Missing bootstrap address"
+        ));
+        let swarm = Arc::clone(node.swarm.as_ref().unwrap());
+        assert!(kademlia_addresses(&mut *swarm.lock().await, &relayer).is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_connect_to_bootstrap_does_nothing_on_the_relayer() {
+        let node = BaseNode::new(test_config(true));
+
+        assert!(node.connect_to_bootstrap().await.is_ok());
+    }
+
     #[test]
     fn test_unauthorized_peer_and_peer_error_messages() {
         assert_eq!(
