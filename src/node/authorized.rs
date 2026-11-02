@@ -10,7 +10,7 @@ use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 
 use crate::types::NodeError;
-use crate::utils::auth::AuthorizedPeersTree;
+use crate::utils::auth::{fits, AuthorizedPeersTree, WireTree, MAX_WIRE_TREE_BYTES};
 use crate::utils::peer_id::UserDirectoryProvider;
 
 /// Where the file sits, under the home directory.
@@ -246,11 +246,23 @@ impl AuthorizedPeers {
     }
 
     // Signs the tree over `peers` and stores it, then makes it current. A
-    // tree that cannot be stored is not used.
+    // tree that cannot be stored, or would not fit a gossipsub message, is
+    // not used.
     fn commit(&mut self, peers: BTreeSet<PeerId>) -> Result<(), NodeError> {
+        let count = peers.len();
         let mut tree = self.tree.clone();
         tree.update_tree(peers.into_iter().collect(), &self.keypair)
             .map_err(|e| NodeError::AuthorizedPeers(e.to_string()))?;
+        let encoded = WireTree::from(&tree)
+            .encode()
+            .map_err(NodeError::AuthorizedPeers)?
+            .len();
+        if !fits(encoded) {
+            return Err(NodeError::AuthorizedPeers(format!(
+                "A tree of {} peers takes {} bytes on the network, more than {}: nothing was changed",
+                count, encoded, MAX_WIRE_TREE_BYTES
+            )));
+        }
         if let Some(store) = &self.store {
             store.save(&tree)?;
         }
@@ -450,6 +462,32 @@ mod tests {
 
         assert_eq!(authorized.tree().signature, tree.signature);
         assert_eq!(authorized.state().peer_ids, sorted_strings(&[a]));
+    }
+
+    #[test]
+    fn test_a_tree_that_would_not_fit_a_gossipsub_message_is_refused() {
+        let home = TempHome::new();
+        let mut authorized =
+            AuthorizedPeers::load(Keypair::generate_ed25519(), Some(home.store())).unwrap();
+        // About 55 bytes a peer: 1100 fit, 1200 do not.
+        let fitting: Vec<PeerId> = (0..1100).map(|_| peer()).collect();
+        assert_eq!(authorized.authorize(&fitting).unwrap().len(), 1100);
+        let state = authorized.state();
+        let stored = fs::read(home.file()).unwrap();
+
+        let more: Vec<PeerId> = (0..100).map(|_| peer()).collect();
+        let message = error_message(authorized.authorize(&more));
+
+        assert!(
+            message.starts_with("A tree of 1200 peers takes ")
+                && message.ends_with(" bytes on the network, more than 64512: nothing was changed"),
+            "{}",
+            message
+        );
+        assert_eq!(authorized.state(), state);
+        assert_eq!(fs::read(home.file()).unwrap(), stored);
+        // A revocation brings it back under the limit.
+        assert_eq!(authorized.revoke(&fitting[..1]).unwrap().len(), 1);
     }
 
     #[test]

@@ -314,7 +314,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
             local_test: args.local_test,
             rpc_address: None,
         };
-        let mut node = ValidatorNode::new(node_config);
+        let mut node = ValidatorNode::new(node_config)?;
         node.run().await?;
     } else if args.relayer {
         const DEFAULT_PORT: u16 = 62649;

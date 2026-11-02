@@ -4,6 +4,7 @@ use libp2p::kad::store::MemoryStore;
 use libp2p::kad::Mode;
 use libp2p::request_response::ProtocolSupport;
 use libp2p::swarm::behaviour::toggle::Toggle;
+use libp2p::swarm::ListenError;
 use libp2p::{gossipsub, swarm::SwarmEvent, Multiaddr, SwarmBuilder};
 use libp2p::{identify, kad, ping, request_response, PeerId, StreamProtocol};
 use std::hash::{Hash, Hasher};
@@ -22,6 +23,22 @@ use crate::utils::peer_id::{
 };
 
 const KEY_EXCHANGE_PROTOCOL: &str = "/key-exchange/1.0.0";
+/// The protocol on which a validator asks the relayer for its current tree.
+pub const AUTHORIZED_PEERS_PROTOCOL: &str = "/authorized-peers/1.0.0";
+/// The gossipsub topic of the events.
+pub const CUSTOM_EVENTS_TOPIC: &str = "custom_events";
+/// The gossipsub topic on which the relayer publishes each tree it signs.
+pub const AUTHORIZED_PEERS_TOPIC: &str = "authorized_peers";
+
+/// The relayer's peer ID, which a validator takes from `--bootstrap-peer-id`.
+pub fn bootstrap_peer_id(config: &NodeConfig) -> Result<PeerId, NodeError> {
+    let id = config
+        .bootstrap_peer_id
+        .as_deref()
+        .ok_or_else(|| NodeError::ConfigError("Missing bootstrap peer ID".to_string()))?;
+    PeerId::from_str(id)
+        .map_err(|e| NodeError::ConfigError(format!("Invalid bootstrap peer ID {}: {}", id, e)))
+}
 
 // Trait that defines common behavior for all node types
 pub trait NodeCommon {
@@ -96,18 +113,28 @@ impl BaseNode {
         }
     }
 
-    // Common initialization methods
+    // Common initialization methods. Both node types enforce their allow
+    // list, which starts allowing no peer: the relayer allows the authorized
+    // ones once it has loaded them, a validator the relayer, then the peers of
+    // each tree it accepts.
     pub async fn init_swarm(&mut self) -> Result<(), NodeError> {
-        let keypair = &self.get_keypair_for_network();
+        let keypair = self.get_keypair_for_network();
         self.keypair = Some(keypair.clone());
+        let swarm = Self::build_swarm(&keypair, true)?;
+        self.swarm = Some(Arc::new(Mutex::new(swarm)));
+        Ok(())
+    }
 
+    /// The swarm of the node's behaviours. Without `enforce_allow_list`, it
+    /// denies no peer: only the tests build one so.
+    pub(crate) fn build_swarm(
+        keypair: &Keypair,
+        enforce_allow_list: bool,
+    ) -> Result<libp2p::Swarm<NodeBehaviour>, NodeError> {
         let gossipsub_config = Self::configure_gossipsub()?;
         let kademlia_config = Self::configure_kademlia();
         let request_response_config =
             request_response::Config::default().with_request_timeout(Duration::from_secs(30));
-        // The relayer starts allowing no peer; it allows the authorized ones once
-        // it has loaded them.
-        let enforce_allow_list = self.config.is_bootstrap_node;
 
         let swarm = SwarmBuilder::with_existing_identity(keypair.clone())
             .with_tokio()
@@ -142,6 +169,13 @@ impl BaseNode {
                             StreamProtocol::new(KEY_EXCHANGE_PROTOCOL),
                             ProtocolSupport::Full,
                         )],
+                        request_response_config.clone(),
+                    ),
+                    authorized_peers: request_response::json::Behaviour::new(
+                        [(
+                            StreamProtocol::new(AUTHORIZED_PEERS_PROTOCOL),
+                            ProtocolSupport::Full,
+                        )],
                         request_response_config,
                     ),
                 })
@@ -149,9 +183,7 @@ impl BaseNode {
             .map_err(|e| NodeError::ConfigError(e.to_string()))?
             .with_swarm_config(|cfg| cfg.with_idle_connection_timeout(Duration::from_secs(5)))
             .build();
-
-        self.swarm = Some(Arc::new(Mutex::new(swarm)));
-        Ok(())
+        Ok(swarm)
     }
 
     pub async fn connect_to_bootstrap(&self) -> Result<(), NodeError> {
@@ -160,9 +192,7 @@ impl BaseNode {
         }
 
         // Only for validator nodes
-        let bootstrap_peer_id =
-            PeerId::from_str(self.config.bootstrap_peer_id.as_ref().unwrap())
-                .map_err(|_| NodeError::ConfigError("Missing bootstrap peer ID".to_string()))?;
+        let bootstrap_peer_id = bootstrap_peer_id(&self.config)?;
 
         let bootstrap_addr = if let Some(addr) = &self.config.bootstrap_address {
             if addr.parse::<std::net::IpAddr>().is_ok() {
@@ -347,6 +377,25 @@ impl BaseNode {
                 behaviour.gossipsub.add_explicit_peer(&peer_id);
             }
 
+            SwarmEvent::IncomingConnectionError {
+                peer_id: Some(peer_id),
+                send_back_addr,
+                error: ListenError::Denied { cause },
+                ..
+            } if cause
+                .downcast_ref::<allow_block_list::NotAllowed>()
+                .is_some() =>
+            {
+                warn!(
+                    "Denied a connection from unauthorized peer {} at {}",
+                    peer_id, send_back_addr
+                );
+            }
+
+            SwarmEvent::ConnectionClosed { peer_id, cause, .. } => {
+                info!("Connection closed with {}: {:?}", peer_id, cause);
+            }
+
             // Add other common event handling logic here...
             _ => debug!("Other event: {:?}", event),
         }
@@ -475,6 +524,50 @@ mod tests {
         assert!(kademlia_addresses(&mut swarm, &peer_id).is_empty());
     }
 
+    #[tokio::test]
+    async fn test_both_node_types_enforce_an_allow_list_that_starts_empty() {
+        for is_bootstrap_node in [true, false] {
+            let mut node = BaseNode::new(test_config(is_bootstrap_node));
+            node.init_swarm().await.unwrap();
+            let swarm = Arc::clone(node.swarm.as_ref().unwrap());
+            let mut swarm = swarm.lock().await;
+
+            let allow_list = swarm.behaviour_mut().allow_list.as_mut();
+            assert!(
+                allow_list.is_some_and(|list| list.allowed_peers().is_empty()),
+                "relayer: {}",
+                is_bootstrap_node
+            );
+        }
+    }
+
+    #[test]
+    fn test_wire_names_are_stable() {
+        assert_eq!(KEY_EXCHANGE_PROTOCOL, "/key-exchange/1.0.0");
+        assert_eq!(AUTHORIZED_PEERS_PROTOCOL, "/authorized-peers/1.0.0");
+        assert_eq!(CUSTOM_EVENTS_TOPIC, "custom_events");
+        assert_eq!(AUTHORIZED_PEERS_TOPIC, "authorized_peers");
+    }
+
+    #[test]
+    fn test_the_bootstrap_peer_id_is_parsed_from_the_config() {
+        let peer = Keypair::generate_ed25519().public().to_peer_id();
+        let mut config = test_config(false);
+        config.bootstrap_peer_id = Some(peer.to_string());
+        assert_eq!(bootstrap_peer_id(&config).unwrap(), peer);
+
+        config.bootstrap_peer_id = None;
+        assert!(matches!(
+            bootstrap_peer_id(&config),
+            Err(NodeError::ConfigError(message)) if message == "Missing bootstrap peer ID"
+        ));
+        config.bootstrap_peer_id = Some("x".to_string());
+        assert!(matches!(
+            bootstrap_peer_id(&config),
+            Err(NodeError::ConfigError(message)) if message.starts_with("Invalid bootstrap peer ID x: ")
+        ));
+    }
+
     #[test]
     fn test_unauthorized_peer_and_peer_error_messages() {
         assert_eq!(
@@ -513,14 +606,15 @@ pub(crate) mod test_support {
         }
     }
 
-    /// A bare swarm, owned by the test, with the node's behaviours.
+    /// A bare swarm, owned by the test, with the node's behaviours and no
+    /// allow list: it connects to any peer, and lets any peer connect.
     pub async fn bare_swarm() -> Swarm<NodeBehaviour> {
-        let mut node = BaseNode::new(test_config(false));
-        node.init_swarm().await.unwrap();
-        let swarm = node.swarm.take().unwrap();
-        Arc::try_unwrap(swarm)
-            .unwrap_or_else(|_| panic!("a new swarm is not shared"))
-            .into_inner()
+        bare_swarm_of(&generate_keypair(None))
+    }
+
+    /// A bare swarm with the identity `keypair`.
+    pub fn bare_swarm_of(keypair: &Keypair) -> Swarm<NodeBehaviour> {
+        BaseNode::build_swarm(keypair, false).unwrap()
     }
 
     /// Listens on a new loopback port and returns the address once bound.

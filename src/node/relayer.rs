@@ -2,17 +2,15 @@ use futures::StreamExt;
 use libp2p::allow_block_list::{self, AllowedPeers};
 use libp2p::identity::Keypair;
 use libp2p::{gossipsub, PeerId, Swarm};
-use libp2p::{
-    request_response,
-    swarm::{ListenError, SwarmEvent},
-};
+use libp2p::{request_response, swarm::SwarmEvent};
 use std::sync::Arc;
 use tokio::sync::{mpsc, oneshot, Mutex};
 use tracing::{error, info, warn};
 
 use super::authorized::{tree_store, AuthorizedNodes, AuthorizedPeers};
-use super::common::{BaseNode, NodeCommon};
+use super::common::{BaseNode, NodeCommon, AUTHORIZED_PEERS_TOPIC, CUSTOM_EVENTS_TOPIC};
 use crate::rpc::start_rpc_server;
+use crate::utils::auth::{AuthorizedPeersRequest, AuthorizedPeersTree, WireTree};
 use crate::utils::peer_id::DefaultUserDirectoryProvider;
 use crate::{
     types::{rpc_bind_address, NodeBehaviourEvent, NodeConfig, NodeError, NodeMetrics, NodeState},
@@ -93,36 +91,104 @@ fn allow_authorized_peers(
     Ok(())
 }
 
-/// Authorizes `peers` and lets them connect.
+/// Publishes `tree` on the topic every validator listens to. A tree no
+/// validator receives now, it asks for when it connects.
+fn publish_tree(swarm: &mut Swarm<NodeBehaviour>, tree: &AuthorizedPeersTree) {
+    let bytes = match WireTree::from(tree).encode() {
+        Ok(bytes) => bytes,
+        Err(e) => {
+            error!("Cannot encode the authorized peers tree: {}", e);
+            return;
+        }
+    };
+    let topic = gossipsub::IdentTopic::new(AUTHORIZED_PEERS_TOPIC);
+    match swarm.behaviour_mut().gossipsub.publish(topic, bytes) {
+        Ok(_) => info!(
+            "Published the authorized peers tree: {} peers, timestamp {}",
+            tree.peers.len(),
+            tree.timestamp
+        ),
+        Err(gossipsub::PublishError::NoPeersSubscribedToTopic) => info!(
+            "Published the authorized peers tree to no validator: none is subscribed (timestamp {})",
+            tree.timestamp
+        ),
+        Err(e) => warn!(
+            "Failed to publish the authorized peers tree (timestamp {}): {}",
+            tree.timestamp, e
+        ),
+    }
+}
+
+/// Authorizes `peers`, lets them connect, and publishes the new tree.
 pub fn authorize_nodes(
     swarm: &mut Swarm<NodeBehaviour>,
     authorized: &mut AuthorizedPeers,
     peers: &[PeerId],
 ) -> Result<AuthorizedNodes, NodeError> {
-    for peer in authorized.authorize(peers)? {
+    let added = authorized.authorize(peers)?;
+    for peer in &added {
         if let Some(allow_list) = allow_list(swarm) {
-            allow_list.allow_peer(peer);
+            allow_list.allow_peer(*peer);
         }
         info!("Authorized peer {}", peer);
+    }
+    if !added.is_empty() {
+        publish_tree(swarm, authorized.tree());
     }
     Ok(authorized.state())
 }
 
 /// Revokes `peers`: they may no longer connect, and their connections are
-/// closed.
+/// closed. Publishes the new tree.
 pub fn revoke_nodes(
     swarm: &mut Swarm<NodeBehaviour>,
     authorized: &mut AuthorizedPeers,
     peers: &[PeerId],
 ) -> Result<AuthorizedNodes, NodeError> {
-    for peer in authorized.revoke(peers)? {
+    let removed = authorized.revoke(peers)?;
+    for peer in &removed {
         // Closes the peer's connections, too.
         if let Some(allow_list) = allow_list(swarm) {
-            allow_list.disallow_peer(peer);
+            allow_list.disallow_peer(*peer);
         }
         info!("Revoked peer {}: its connections are closed", peer);
     }
+    if !removed.is_empty() {
+        publish_tree(swarm, authorized.tree());
+    }
     Ok(authorized.state())
+}
+
+/// Answers a validator that asks for the current tree. Only a peer the
+/// relayer allows can be connected to ask.
+fn handle_tree_request(
+    swarm: &mut Swarm<NodeBehaviour>,
+    authorized: &AuthorizedPeers,
+    event: request_response::Event<AuthorizedPeersRequest, WireTree>,
+) {
+    match event {
+        request_response::Event::Message {
+            peer,
+            message: request_response::Message::Request { channel, .. },
+            ..
+        } => {
+            let tree = authorized.tree();
+            if swarm
+                .behaviour_mut()
+                .authorized_peers
+                .send_response(channel, WireTree::from(tree))
+                .is_ok()
+            {
+                info!(
+                    "Sent the authorized peers tree to {}: timestamp {}",
+                    peer, tree.timestamp
+                );
+            } else {
+                warn!("Could not send the authorized peers tree to {}", peer);
+            }
+        }
+        other => warn!("Unexpected authorized peers event: {:?}", other),
+    }
 }
 
 fn handle_command(
@@ -181,7 +247,7 @@ impl RelayerNode {
     }
 
     async fn init_gossipsub_topic(&mut self) -> Result<gossipsub::IdentTopic, NodeError> {
-        let topic = gossipsub::IdentTopic::new("custom_events");
+        let topic = gossipsub::IdentTopic::new(CUSTOM_EVENTS_TOPIC);
 
         let swarm = self
             .base
@@ -219,9 +285,14 @@ impl RelayerNode {
     async fn handle_relayer_events(
         &mut self,
         swarm: &mut Swarm<NodeBehaviour>,
+        authorized: &AuthorizedPeers,
         event: SwarmEvent<NodeBehaviourEvent>,
     ) {
         match event {
+            SwarmEvent::Behaviour(NodeBehaviourEvent::AuthorizedPeers(event)) => {
+                handle_tree_request(swarm, authorized, event);
+            }
+
             SwarmEvent::Behaviour(NodeBehaviourEvent::Gossipsub(gossipsub::Event::Message {
                 propagation_source,
                 message_id,
@@ -290,25 +361,6 @@ impl RelayerNode {
                 }
             }
 
-            SwarmEvent::IncomingConnectionError {
-                peer_id: Some(peer_id),
-                send_back_addr,
-                error: ListenError::Denied { cause },
-                ..
-            } if cause
-                .downcast_ref::<allow_block_list::NotAllowed>()
-                .is_some() =>
-            {
-                warn!(
-                    "Denied a connection from unauthorized peer {} at {}",
-                    peer_id, send_back_addr
-                );
-            }
-
-            SwarmEvent::ConnectionClosed { peer_id, cause, .. } => {
-                info!("Connection closed with {}: {:?}", peer_id, cause);
-            }
-
             _ => {
                 // Handle common events through the base implementation
                 self.base.handle_common_events(swarm, event).await;
@@ -328,7 +380,7 @@ impl RelayerNode {
         while self.base.state != NodeState::Disconnected {
             tokio::select! {
                 event = swarm.select_next_some() => {
-                    self.handle_relayer_events(swarm, event).await;
+                    self.handle_relayer_events(swarm, authorized, event).await;
                 }
                 command = commands.recv() => match command {
                     Some(command) => handle_command(swarm, authorized, command),
@@ -391,6 +443,7 @@ mod tests {
         bare_swarm, capture_logs, kademlia_addresses, listen, logged, test_config,
     };
     use crate::utils::peer_id::generate_keypair;
+    use libp2p::swarm::ListenError;
     use libp2p::Multiaddr;
     use std::time::Duration;
 
@@ -573,6 +626,25 @@ mod tests {
         node: &mut RelayerNode,
         relayer: &mut Swarm<NodeBehaviour>,
         peer: &mut Swarm<NodeBehaviour>,
+        step: F,
+    ) where
+        F: FnMut(
+            &mut RelayerNode,
+            &mut Swarm<NodeBehaviour>,
+            &mut Swarm<NodeBehaviour>,
+            Option<SwarmEvent<NodeBehaviourEvent>>,
+        ) -> bool,
+    {
+        let authorized = in_memory_authorized();
+        drive_with(node, relayer, &authorized, peer, step).await
+    }
+
+    // As `drive`, the relayer serving the tree of `authorized`.
+    async fn drive_with<F>(
+        node: &mut RelayerNode,
+        relayer: &mut Swarm<NodeBehaviour>,
+        authorized: &AuthorizedPeers,
+        peer: &mut Swarm<NodeBehaviour>,
         mut step: F,
     ) where
         F: FnMut(
@@ -587,7 +659,7 @@ mod tests {
             loop {
                 let done = tokio::select! {
                     event = relayer.select_next_some() => {
-                        node.handle_relayer_events(relayer, event).await;
+                        node.handle_relayer_events(relayer, authorized, event).await;
                         step(node, relayer, peer, None)
                     }
                     event = peer.select_next_some() => step(node, relayer, peer, Some(event)),
@@ -682,7 +754,7 @@ mod tests {
         let mut peer = bare_swarm().await;
         admit(&mut relayer, *peer.local_peer_id());
         peer.dial(address).unwrap();
-        let topic = gossipsub::IdentTopic::new("custom_events");
+        let topic = gossipsub::IdentTopic::new(CUSTOM_EVENTS_TOPIC);
 
         let mut published = false;
         drive(&mut node, &mut relayer, &mut peer, |node, _, peer, _| {
@@ -774,7 +846,8 @@ mod tests {
         tokio::time::timeout(Duration::from_secs(5), async {
             while !logged(&logs, "Listening on /ip4/127.0.0.1/udp/") {
                 let event = swarm.select_next_some().await;
-                node.handle_relayer_events(&mut swarm, event).await;
+                node.handle_relayer_events(&mut swarm, &in_memory_authorized(), event)
+                    .await;
             }
         })
         .await
@@ -957,7 +1030,8 @@ mod tests {
             peer_id: Some(peer),
         };
 
-        node.handle_relayer_events(&mut swarm, event).await;
+        node.handle_relayer_events(&mut swarm, &in_memory_authorized(), event)
+            .await;
 
         assert!(!logged(&logs, "Denied a connection from unauthorized peer"));
     }
@@ -977,5 +1051,188 @@ mod tests {
             "{:?}",
             result
         );
+    }
+
+    fn count(logs: &std::sync::Mutex<Vec<String>>, prefix: &str) -> usize {
+        logs.lock()
+            .unwrap()
+            .iter()
+            .filter(|message| message.starts_with(prefix))
+            .count()
+    }
+
+    #[tokio::test]
+    async fn test_a_tree_is_published_only_when_it_changed() {
+        let (logs, _guard) = capture_logs();
+        let mut swarm = idle_relayer().await.take_swarm().unwrap();
+        let mut authorized = in_memory_authorized();
+        let (a, b) = (random_peer(), random_peer());
+        // No validator listens: the publication reaches nobody, and says so.
+        let published = "Published the authorized peers tree to no validator";
+
+        authorize_nodes(&mut swarm, &mut authorized, &[a, b]).unwrap();
+        assert_eq!(count(&logs, published), 1);
+        let timestamp = authorized.tree().timestamp;
+        assert!(logged(
+            &logs,
+            &format!(
+                "{}: none is subscribed (timestamp {})",
+                published, timestamp
+            )
+        ));
+
+        // Nothing changes: nothing is signed, nothing is published.
+        authorize_nodes(&mut swarm, &mut authorized, &[a]).unwrap();
+        revoke_nodes(&mut swarm, &mut authorized, &[random_peer()]).unwrap();
+        assert!(authorize_nodes(&mut swarm, &mut authorized, &[]).is_err());
+        assert_eq!(count(&logs, published), 1);
+
+        revoke_nodes(&mut swarm, &mut authorized, &[a]).unwrap();
+        assert_eq!(count(&logs, published), 2);
+    }
+
+    #[tokio::test]
+    async fn test_an_update_whose_tree_would_not_fit_is_refused_and_published_nowhere() {
+        let (logs, _guard) = capture_logs();
+        let mut swarm = idle_relayer().await.take_swarm().unwrap();
+        let mut authorized = in_memory_authorized();
+        let peers: Vec<PeerId> = (0..1200).map(|_| random_peer()).collect();
+
+        assert!(matches!(
+            authorize_nodes(&mut swarm, &mut authorized, &peers),
+            Err(NodeError::AuthorizedPeers(_))
+        ));
+
+        assert!(authorized.state().peer_ids.is_empty());
+        assert!(allowed(&mut swarm).is_empty());
+        assert!(!logged(&logs, "Published the authorized peers tree"));
+        assert!(!logged(&logs, "Authorized peer "));
+    }
+
+    // A validator's subscription to the trees, as the relayer sees it.
+    fn subscribed_to_trees(relayer: &Swarm<NodeBehaviour>, peer: &PeerId) -> bool {
+        let trees = gossipsub::IdentTopic::new("authorized_peers").hash();
+        relayer
+            .behaviour()
+            .gossipsub
+            .all_peers()
+            .any(|(id, topics)| id == peer && topics.contains(&&trees))
+    }
+
+    fn received_tree(event: &Option<SwarmEvent<NodeBehaviourEvent>>) -> Option<WireTree> {
+        match event {
+            Some(SwarmEvent::Behaviour(NodeBehaviourEvent::Gossipsub(
+                gossipsub::Event::Message { message, .. },
+            ))) if message.topic == gossipsub::IdentTopic::new("authorized_peers").hash() => {
+                Some(WireTree::decode(&message.data).unwrap())
+            }
+            _ => None,
+        }
+    }
+
+    #[tokio::test]
+    async fn test_authorize_and_revoke_publish_the_new_tree_to_the_validators() {
+        let (logs, _guard) = capture_logs();
+        let (mut node, mut relayer, address) = listening_relayer().await;
+        let mut authorized = in_memory_authorized();
+        let mut peer = bare_swarm().await;
+        let peer_id = *peer.local_peer_id();
+        peer.behaviour_mut()
+            .gossipsub
+            .subscribe(&gossipsub::IdentTopic::new("authorized_peers"))
+            .unwrap();
+        authorize_nodes(&mut relayer, &mut authorized, &[peer_id]).unwrap();
+        peer.dial(address).unwrap();
+
+        drive(&mut node, &mut relayer, &mut peer, |_, relayer, _, _| {
+            subscribed_to_trees(relayer, &peer_id)
+        })
+        .await;
+
+        // 100 peers more: the tree of 101 travels.
+        let added: Vec<PeerId> = (0..100).map(|_| random_peer()).collect();
+        authorize_nodes(&mut relayer, &mut authorized, &added).unwrap();
+        let expected = WireTree::from(authorized.tree());
+        let mut received = None;
+        drive(&mut node, &mut relayer, &mut peer, |_, _, _, event| {
+            received = received.take().or_else(|| received_tree(&event));
+            received.is_some()
+        })
+        .await;
+        assert_eq!(received, Some(expected));
+        assert!(logged(
+            &logs,
+            &format!(
+                "Published the authorized peers tree: 101 peers, timestamp {}",
+                authorized.tree().timestamp
+            )
+        ));
+
+        revoke_nodes(&mut relayer, &mut authorized, &added[..1]).unwrap();
+        let expected = WireTree::from(authorized.tree());
+        let mut received = None;
+        drive(&mut node, &mut relayer, &mut peer, |_, _, _, event| {
+            received = received.take().or_else(|| received_tree(&event));
+            received.is_some()
+        })
+        .await;
+        assert_eq!(received.as_ref().map(|tree| tree.peers.len()), Some(100));
+        assert_eq!(received, Some(expected));
+    }
+
+    #[tokio::test]
+    async fn test_the_relayer_answers_a_pull_with_its_current_tree() {
+        let (logs, _guard) = capture_logs();
+        let (mut node, mut relayer, address) = listening_relayer().await;
+        let relayer_id = *relayer.local_peer_id();
+        let mut authorized = in_memory_authorized();
+        let mut peer = bare_swarm().await;
+        let peer_id = *peer.local_peer_id();
+        let mut peers: Vec<PeerId> = (0..99).map(|_| random_peer()).collect();
+        peers.push(peer_id);
+        authorize_nodes(&mut relayer, &mut authorized, &peers).unwrap();
+        peer.dial(address).unwrap();
+
+        let mut answer = None;
+        drive_with(
+            &mut node,
+            &mut relayer,
+            &authorized,
+            &mut peer,
+            |_, _, peer, event| {
+                match event {
+                    Some(SwarmEvent::ConnectionEstablished { peer_id, .. })
+                        if peer_id == relayer_id =>
+                    {
+                        peer.behaviour_mut()
+                            .authorized_peers
+                            .send_request(&relayer_id, AuthorizedPeersRequest {});
+                    }
+                    Some(SwarmEvent::Behaviour(NodeBehaviourEvent::AuthorizedPeers(
+                        request_response::Event::Message {
+                            message: request_response::Message::Response { response, .. },
+                            ..
+                        },
+                    ))) => answer = Some(response),
+                    Some(SwarmEvent::Behaviour(NodeBehaviourEvent::AuthorizedPeers(
+                        request_response::Event::OutboundFailure { error, .. },
+                    ))) => panic!("the relayer did not answer: {:?}", error),
+                    _ => {}
+                }
+                answer.is_some()
+            },
+        )
+        .await;
+
+        assert_eq!(answer, Some(WireTree::from(authorized.tree())));
+        assert_eq!(answer.unwrap().peers.len(), 100);
+        assert!(logged(
+            &logs,
+            &format!(
+                "Sent the authorized peers tree to {}: timestamp {}",
+                peer_id,
+                authorized.tree().timestamp
+            )
+        ));
     }
 }
