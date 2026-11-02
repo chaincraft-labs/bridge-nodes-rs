@@ -129,6 +129,7 @@ the validator at start), checks that the peers match the signed root, and
 accepts the tree only when it is newer than the one it holds. It then lets
 the relayer and the tree's peers connect, and no one else: until it holds a
 tree, it allows the relayer only.
+
 ### Where the list is kept
 
 Outside `--local-test`, the relayer stores its signed tree in
