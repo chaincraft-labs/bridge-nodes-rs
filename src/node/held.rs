@@ -33,6 +33,9 @@ pub enum Refusal {
     NotSigned,
     /// Its peers are not those of its signed root.
     Inconsistent,
+    /// It is the tree held: the same signed root and timestamp, as a periodic
+    /// pull brings back until the relayer signs another.
+    AlreadyHeld,
     /// It is not newer than the tree held.
     NotNewer { held: i64, received: i64 },
 }
@@ -43,6 +46,7 @@ impl fmt::Display for Refusal {
             Refusal::Malformed(e) => write!(f, "malformed: {}", e),
             Refusal::NotSigned => write!(f, "not signed by the relayer's key"),
             Refusal::Inconsistent => write!(f, "its peers do not match its signed root"),
+            Refusal::AlreadyHeld => write!(f, "it is the tree held"),
             Refusal::NotNewer { held, received } => write!(
                 f,
                 "its timestamp {} is not newer than the held tree's {}",
@@ -122,6 +126,11 @@ impl HeldTree {
             return Err(Refusal::Inconsistent);
         }
         if let Some(held) = &self.tree {
+            // The relayer signed both: the same root and timestamp is the
+            // same tree, its peers checked against that root.
+            if tree.timestamp == held.timestamp && tree.root == held.root {
+                return Err(Refusal::AlreadyHeld);
+            }
             if tree.timestamp <= held.timestamp {
                 return Err(Refusal::NotNewer {
                     held: held.timestamp,
@@ -306,8 +315,16 @@ mod tests {
         let older = relayer.sign(&[peer()]);
         let newer = relayer.sign(&[peer()]);
         held.accept(newer.clone()).unwrap();
+        // Another root at the held timestamp, and the held root at an older
+        // one: neither is the tree held.
+        let mut same_time = older.clone();
+        same_time.timestamp = newer.timestamp;
+        resign(&mut same_time, &relayer.keypair);
+        let mut same_root = newer.clone();
+        same_root.timestamp = newer.timestamp - 1;
+        resign(&mut same_root, &relayer.keypair);
 
-        for tree in [newer.clone(), older.clone()] {
+        for tree in [same_time, same_root, older] {
             assert_eq!(
                 held.accept_bytes(&bytes(&tree)),
                 Err(Refusal::NotNewer {
@@ -317,6 +334,18 @@ mod tests {
             );
             assert_eq!(held.tree().unwrap().root, newer.root);
         }
+    }
+
+    #[test]
+    fn test_the_tree_held_received_again_is_already_held() {
+        let mut relayer = Relayer::new();
+        let mut held = relayer.held();
+        let tree = relayer.sign(&[peer()]);
+        held.accept(tree.clone()).unwrap();
+
+        assert_eq!(held.accept_bytes(&bytes(&tree)), Err(Refusal::AlreadyHeld));
+        assert_eq!(held.tree().unwrap().timestamp, tree.timestamp);
+        assert_eq!(held.allowed().len(), 2);
     }
 
     #[test]
@@ -517,6 +546,7 @@ mod tests {
             Refusal::Inconsistent.to_string(),
             "its peers do not match its signed root"
         );
+        assert_eq!(Refusal::AlreadyHeld.to_string(), "it is the tree held");
         assert_eq!(
             Refusal::NotNewer {
                 held: 5,

@@ -5,7 +5,7 @@ use libp2p::{gossipsub, PeerId, Swarm};
 use libp2p::{request_response, swarm::SwarmEvent};
 use std::sync::Arc;
 use tokio::sync::{mpsc, oneshot, Mutex};
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
 
 use super::authorized::{tree_store, AuthorizedNodes, AuthorizedPeers};
 use super::common::{BaseNode, NodeCommon, AUTHORIZED_PEERS_TOPIC, CUSTOM_EVENTS_TOPIC};
@@ -186,6 +186,9 @@ fn handle_tree_request(
             } else {
                 warn!("Could not send the authorized peers tree to {}", peer);
             }
+        }
+        request_response::Event::ResponseSent { peer, .. } => {
+            debug!("The authorized peers tree reached {}", peer)
         }
         other => warn!("Unexpected authorized peers event: {:?}", other),
     }
@@ -1194,6 +1197,7 @@ mod tests {
         peer.dial(address).unwrap();
 
         let mut answer = None;
+        let mut answered_at = None;
         drive_with(
             &mut node,
             &mut relayer,
@@ -1219,12 +1223,17 @@ mod tests {
                     ))) => panic!("the relayer did not answer: {:?}", error),
                     _ => {}
                 }
-                answer.is_some()
+                // The relayer goes on until it has seen its response sent.
+                if answer.is_some() && answered_at.is_none() {
+                    answered_at = Some(tokio::time::Instant::now());
+                }
+                answered_at.is_some_and(|at| at.elapsed() > Duration::from_millis(300))
             },
         )
         .await;
 
         assert_eq!(answer, Some(WireTree::from(authorized.tree())));
+        assert!(!logged(&logs, "Unexpected authorized peers event"));
         assert_eq!(answer.unwrap().peers.len(), 100);
         assert!(logged(
             &logs,

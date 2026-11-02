@@ -3,6 +3,7 @@ use libp2p::{gossipsub, request_response, PeerId, Swarm};
 use libp2p::{identity::Keypair, swarm::SwarmEvent};
 use std::{sync::Arc, time::Duration};
 use tokio::sync::Mutex;
+use tokio::time::{Instant, Interval, MissedTickBehavior};
 use tracing::{debug, error, info, warn};
 
 use super::common::{
@@ -29,12 +30,24 @@ fn allow_held_peers(swarm: &mut Swarm<NodeBehaviour>, held: &HeldTree) -> Result
     Ok(())
 }
 
-/// Asks the relayer for its current tree.
-fn ask_for_tree(swarm: &mut Swarm<NodeBehaviour>, relayer: &PeerId) {
+/// How often a validator asks its relayer for the current tree, besides on
+/// each connection to it. A push can be lost: gossipsub drops a message for a
+/// peer whose send queue is full, which an authorized peer can provoke by
+/// flooding. The pull, which does not go through that queue, bounds how long
+/// a lost push leaves a revoked peer allowed.
+const TREE_PULL_PERIOD: Duration = Duration::from_secs(15);
+
+/// Sends the relayer a request for its current tree.
+fn request_tree(swarm: &mut Swarm<NodeBehaviour>, relayer: &PeerId) {
     swarm
         .behaviour_mut()
         .authorized_peers
         .send_request(relayer, AuthorizedPeersRequest {});
+}
+
+/// Asks the relayer for its current tree, when the validator connects to it.
+fn ask_for_tree(swarm: &mut Swarm<NodeBehaviour>, relayer: &PeerId) {
+    request_tree(swarm, relayer);
     info!(
         "Asked the relayer {} for the authorized peers tree",
         relayer
@@ -48,6 +61,10 @@ fn ask_for_tree(swarm: &mut Swarm<NodeBehaviour>, relayer: &PeerId) {
 fn enforce(swarm: &mut Swarm<NodeBehaviour>, outcome: Result<Accepted, Refusal>, from: &PeerId) {
     let accepted = match outcome {
         Ok(accepted) => accepted,
+        Err(Refusal::AlreadyHeld) => {
+            debug!("The authorized peers tree from {} is the one held", from);
+            return;
+        }
         Err(refusal) => {
             warn!(
                 "Refused the authorized peers tree from {}: {}",
@@ -92,6 +109,8 @@ fn enforce(swarm: &mut Swarm<NodeBehaviour>, outcome: Result<Accepted, Refusal>,
 pub struct ValidatorNode {
     base: BaseNode,
     held: HeldTree,
+    /// How often the run loop asks the relayer for its tree.
+    pull_period: Duration,
 }
 
 impl NodeCommon for ValidatorNode {
@@ -124,6 +143,7 @@ impl ValidatorNode {
         Ok(Self {
             base: BaseNode::new(config),
             held,
+            pull_period: TREE_PULL_PERIOD,
         })
     }
 
@@ -369,6 +389,39 @@ impl ValidatorNode {
         self.publish_blockchain_event().await
     }
 
+    /// The timer of the periodic pulls. Its first tick comes one period after
+    /// the start: the connection to the relayer asks for the tree first.
+    fn pull_timer(&self) -> Interval {
+        let mut timer =
+            tokio::time::interval_at(Instant::now() + self.pull_period, self.pull_period);
+        timer.set_missed_tick_behavior(MissedTickBehavior::Delay);
+        timer
+    }
+
+    /// Handles the next swarm event or, when the pull timer ticks first, asks
+    /// the relayer for its tree. A relayer that is not connected is dialed.
+    async fn step(&mut self, swarm: &Arc<Mutex<Swarm<NodeBehaviour>>>, pull: &mut Interval) {
+        let event = {
+            let mut swarm = swarm.lock().await;
+            tokio::select! {
+                event = swarm.next() => event,
+                _ = pull.tick() => {
+                    request_tree(&mut swarm, &self.held.relayer());
+                    debug!(
+                        "Asked the relayer {} for the authorized peers tree, as every {:?}",
+                        self.held.relayer(),
+                        self.pull_period
+                    );
+                    None
+                }
+            }
+        };
+
+        if let Some(event) = event {
+            self.handle_validator_events(event).await;
+        }
+    }
+
     pub async fn run(&mut self) -> Result<(), NodeError> {
         info!("🔶 Validator node");
         self.start().await?;
@@ -380,15 +433,9 @@ impl ValidatorNode {
                 .expect("Swarm should be initialized"),
         );
 
+        let mut pull = self.pull_timer();
         while self.base.state != NodeState::Disconnected {
-            let event = {
-                let mut locked_swarm = swarm.lock().await;
-                locked_swarm.next().await
-            };
-
-            if let Some(event) = event {
-                self.handle_validator_events(event).await;
-            }
+            self.step(&swarm, &mut pull).await;
         }
 
         Ok(())
@@ -805,7 +852,7 @@ mod tests {
         assert!(!logged(&logs, "Refused the authorized peers tree"));
 
         // A refusal changes nothing.
-        let stale = signer.tree.clone();
+        let stale = tree;
         enforce(&mut swarm, held.accept(stale.clone()), &relayer);
         assert_eq!(allowed(&mut swarm), BTreeSet::from([relayer, a, c]));
         assert!(logged(
@@ -815,6 +862,12 @@ mod tests {
                 relayer, stale.timestamp
             )
         ));
+        assert_eq!(count(&logs, "Accepted the authorized peers tree"), 3);
+
+        // The tree held, received again, is no refusal.
+        enforce(&mut swarm, held.accept(signer.tree.clone()), &relayer);
+        assert_eq!(allowed(&mut swarm), BTreeSet::from([relayer, a, c]));
+        assert_eq!(count(&logs, "Refused the authorized peers tree"), 1);
         assert_eq!(count(&logs, "Accepted the authorized peers tree"), 3);
     }
 
@@ -889,6 +942,130 @@ mod tests {
         assert_eq!(allowed(&mut *shared(&node).lock().await), expected);
         assert!(logged(&logs, "Asked the relayer "));
         assert!(logged(&logs, "Accepted the authorized peers tree from "));
+    }
+
+    // Answers each tree request with the tree `serving` holds when it comes,
+    // and counts the requests, until the test ends.
+    fn serve_trees(
+        mut relayer: Swarm<NodeBehaviour>,
+        serving: Arc<std::sync::Mutex<WireTree>>,
+        requests: Arc<std::sync::atomic::AtomicUsize>,
+    ) {
+        tokio::spawn(async move {
+            loop {
+                if let SwarmEvent::Behaviour(NodeBehaviourEvent::AuthorizedPeers(
+                    request_response::Event::Message {
+                        message: request_response::Message::Request { channel, .. },
+                        ..
+                    },
+                )) = relayer.select_next_some().await
+                {
+                    requests.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    let tree = serving.lock().unwrap().clone();
+                    let _ = relayer
+                        .behaviour_mut()
+                        .authorized_peers
+                        .send_response(channel, tree);
+                }
+            }
+        });
+    }
+
+    // Runs the validator's own loop step until `done` holds.
+    async fn step_until<F>(node: &mut ValidatorNode, mut done: F)
+    where
+        F: FnMut(&ValidatorNode) -> bool,
+    {
+        let swarm = shared(node);
+        let mut pull = node.pull_timer();
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while !done(node) {
+                node.step(&swarm, &mut pull).await;
+                // A step that waits for nothing must not starve the timeout.
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("the validator did not get there in time");
+    }
+
+    #[tokio::test]
+    async fn test_a_periodic_pull_brings_a_revocation_whose_push_was_lost() {
+        let (logs, _guard) = capture_logs();
+        let mut signer = Signer::new();
+        let revoked = random_peer();
+        let first = signer.sign(&[revoked]);
+        let mut relayer = bare_swarm_of(&signer.keypair);
+        let address = listen(&mut relayer).await;
+        let serving = Arc::new(std::sync::Mutex::new(WireTree::from(&first)));
+        let requests = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        serve_trees(relayer, Arc::clone(&serving), Arc::clone(&requests));
+        let mut node = validator_dialing(&signer.id(), address).await;
+        node.pull_period = Duration::from_millis(200);
+
+        step_until(&mut node, |node| node.held.tree().is_some()).await;
+        assert!(allowed(&mut *shared(&node).lock().await).contains(&revoked));
+
+        // The relayer revokes the peer, and its push never arrives.
+        let second = signer.sign(&[]);
+        *serving.lock().unwrap() = WireTree::from(&second);
+        step_until(&mut node, |node| {
+            node.held.tree().unwrap().timestamp == second.timestamp
+        })
+        .await;
+
+        assert!(!allowed(&mut *shared(&node).lock().await).contains(&revoked));
+        // The next pulls bring the tree held back: nothing to refuse.
+        let pulled = requests.load(std::sync::atomic::Ordering::SeqCst);
+        assert!(pulled >= 2);
+        step_until(&mut node, |_| {
+            requests.load(std::sync::atomic::Ordering::SeqCst) > pulled + 1
+        })
+        .await;
+        assert!(!logged(&logs, "Refused the authorized peers tree"));
+        assert_eq!(node.held.tree().unwrap().timestamp, second.timestamp);
+    }
+
+    #[tokio::test]
+    async fn test_the_first_periodic_pull_comes_one_period_after_the_start() {
+        let mut node = ValidatorNode::new(config_for(&random_peer())).unwrap();
+        node.pull_period = Duration::from_millis(300);
+        let started = Instant::now();
+        let mut pull = node.pull_timer();
+
+        pull.tick().await;
+
+        assert!(started.elapsed() >= Duration::from_millis(300));
+    }
+
+    #[tokio::test]
+    async fn test_a_pulled_tree_larger_than_a_push_fails_before_it_is_decoded() {
+        let (logs, _guard) = capture_logs();
+        let mut signer = Signer::new();
+        let peers: Vec<PeerId> = (0..1300).map(|_| random_peer()).collect();
+        let large = WireTree::from(&signer.sign(&peers));
+        assert!(large.encode().unwrap().len() > crate::utils::auth::MAX_WIRE_TREE_BYTES);
+        let mut relayer = bare_swarm_of(&signer.keypair);
+        let address = listen(&mut relayer).await;
+        let requests = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        serve_trees(
+            relayer,
+            Arc::new(std::sync::Mutex::new(large)),
+            Arc::clone(&requests),
+        );
+        let mut node = validator_dialing(&signer.id(), address).await;
+
+        step_until(&mut node, |_| {
+            logged(&logs, "Failed to get the authorized peers tree from ")
+        })
+        .await;
+
+        assert_eq!(requests.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert!(node.held.tree().is_none());
+        assert_eq!(
+            allowed(&mut *shared(&node).lock().await),
+            BTreeSet::from([signer.id()])
+        );
     }
 
     #[tokio::test]

@@ -18,6 +18,7 @@ use tracing::{debug, error, info, warn};
 use crate::types::{
     NodeBehaviour, NodeBehaviourEvent, NodeConfig, NodeError, NodeMetrics, NodeState,
 };
+use crate::utils::auth::MAX_WIRE_TREE_BYTES;
 use crate::utils::peer_id::{
     generate_keypair, read_keypair_from_file, DefaultUserDirectoryProvider,
 };
@@ -25,6 +26,9 @@ use crate::utils::peer_id::{
 const KEY_EXCHANGE_PROTOCOL: &str = "/key-exchange/1.0.0";
 /// The protocol on which a validator asks the relayer for its current tree.
 pub const AUTHORIZED_PEERS_PROTOCOL: &str = "/authorized-peers/1.0.0";
+/// The largest request of `/authorized-peers/1.0.0` a node reads: the request is
+/// the empty object `{}`.
+const AUTHORIZED_PEERS_REQUEST_BYTES: u64 = 1024;
 /// The gossipsub topic of the events.
 pub const CUSTOM_EVENTS_TOPIC: &str = "custom_events";
 /// The gossipsub topic on which the relayer publishes each tree it signs.
@@ -171,7 +175,13 @@ impl BaseNode {
                         )],
                         request_response_config.clone(),
                     ),
-                    authorized_peers: request_response::json::Behaviour::new(
+                    // A tree is never larger than a node sends or accepts by
+                    // push, and the request carries nothing: the codec reads
+                    // no more than that before decoding.
+                    authorized_peers: request_response::json::Behaviour::with_codec(
+                        request_response::json::codec::Codec::default()
+                            .set_request_size_maximum(AUTHORIZED_PEERS_REQUEST_BYTES)
+                            .set_response_size_maximum(MAX_WIRE_TREE_BYTES as u64),
                         [(
                             StreamProtocol::new(AUTHORIZED_PEERS_PROTOCOL),
                             ProtocolSupport::Full,

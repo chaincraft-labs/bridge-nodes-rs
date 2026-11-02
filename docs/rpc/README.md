@@ -118,10 +118,13 @@ the administrator authorizes one.
 
 The relayer publishes each tree it signs on the gossipsub topic
 `authorized_peers`, and answers `/authorized-peers/1.0.0` with its current
-tree: a validator asks for it each time it connects to the relayer, so one
-that joins late gets the list too. On both, the tree travels as the JSON
-object `{"peers":[…],"root":"…","timestamp":…,"signature":"…"}`: the peer IDs
-sorted, the root and the signature in hex. The receiver rebuilds the proofs.
+tree. A validator asks for it each time it connects to the relayer, so one
+that joins late gets the list too, and every 15 seconds after that, so a
+publication gossipsub dropped still reaches it. On both, the tree travels as
+the JSON object `{"peers":[…],"root":"…","timestamp":…,"signature":"…"}`:
+the peer IDs sorted, the root and the signature in hex. The receiver rebuilds
+the proofs. A tree larger than 64512 bytes is refused on both before it is
+decoded.
 
 A validator checks the signature with the relayer's key, which it takes from
 `--bootstrap-peer-id` (an ed25519 peer ID embeds it; one that does not stops
