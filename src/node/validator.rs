@@ -1027,6 +1027,41 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_a_running_validator_keeps_pulling_the_tree_while_connected() {
+        let mut signer = Signer::new();
+        let tree = signer.sign(&[random_peer()]);
+        let mut relayer = bare_swarm_of(&signer.keypair);
+        let address = listen(&mut relayer).await;
+        let port = address
+            .iter()
+            .find_map(|protocol| match protocol {
+                libp2p::multiaddr::Protocol::Udp(port) => Some(port),
+                _ => None,
+            })
+            .unwrap();
+        let requests = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        serve_trees(
+            relayer,
+            Arc::new(std::sync::Mutex::new(WireTree::from(&tree))),
+            Arc::clone(&requests),
+        );
+        let mut config = config_for(&signer.id());
+        config.bootstrap_address = Some("127.0.0.1".to_string());
+        config.bootstrap_port = port;
+        let mut node = ValidatorNode::new(config).unwrap();
+        node.pull_period = Duration::from_millis(200);
+
+        let outcome = tokio::time::timeout(Duration::from_millis(1500), node.run()).await;
+
+        assert!(
+            outcome.is_err(),
+            "run returned while connected: {:?}",
+            outcome
+        );
+        assert!(requests.load(std::sync::atomic::Ordering::SeqCst) >= 2);
+    }
+
+    #[tokio::test]
     async fn test_the_first_periodic_pull_comes_one_period_after_the_start() {
         let mut node = ValidatorNode::new(config_for(&random_peer())).unwrap();
         node.pull_period = Duration::from_millis(300);
