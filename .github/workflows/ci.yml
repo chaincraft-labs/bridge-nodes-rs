@@ -37,7 +37,7 @@ jobs:
       fail-fast: false
       matrix:
         # Linux is where the Dockerfile runs the nodes; macOS is where they are
-        # developed, and its bash 3.2 runs the scripts. A named Ubuntu, not
+        # developed, with the system's bash 3.2. A named Ubuntu, not
         # `ubuntu-latest`, whose meaning changes under the repository.
         os: [ubuntu-26.04, macos-latest]
     steps:
@@ -74,8 +74,12 @@ jobs:
 
       - name: Smoke test
         # A relayer, validators and outsiders on loopback, from the debug
-        # binary the build step made.
-        run: scripts/smoke.sh
+        # binary the build step made. Through `/bin/bash`: on macOS that is
+        # the system's bash 3.2, which a developer's machine runs, where
+        # `env bash` could find a newer one first on the runner's PATH.
+        run: |
+          /bin/bash --version | head -n 1
+          /bin/bash scripts/smoke.sh
 
       - name: The smoke test's logs
         if: failure()
