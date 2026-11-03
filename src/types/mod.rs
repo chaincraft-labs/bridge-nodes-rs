@@ -11,6 +11,8 @@ use serde::{Deserialize, Serialize};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::time::Duration;
 
+use crate::utils::auth::{AuthorizedPeersRequest, WireTree};
+
 /// TCP port of the relayer's JSON-RPC server.
 pub const RPC_PORT: u16 = 8545;
 
@@ -85,14 +87,15 @@ pub enum NodeState {
 #[behaviour(out_event = "NodeBehaviourEvent")]
 pub struct NodeBehaviour {
     // First, so a denied peer is refused before any other behaviour sees the
-    // connection. Enabled on the relayer only: the allowed peers are the ones
-    // it authorized. Validators enforce nothing yet.
+    // connection. The relayer allows the peers it authorized; a validator, the
+    // relayer and the peers of the signed tree it holds.
     pub allow_list: Toggle<allow_block_list::Behaviour<AllowedPeers>>,
     pub gossipsub: gossipsub::Behaviour,
     pub kademlia: kad::Behaviour<MemoryStore>,
     pub identify: identify::Behaviour,
     pub ping: ping::Behaviour,
     pub key_exchange: json::Behaviour<PartialKeyRequest, PartialKeyResponse>,
+    pub authorized_peers: json::Behaviour<AuthorizedPeersRequest, WireTree>,
 }
 
 // Boxing the large variants would break the nested patterns the node event
@@ -105,6 +108,7 @@ pub enum NodeBehaviourEvent {
     Identify(identify::Event),
     Ping(ping::Event),
     KeyExchange(request_response::Event<PartialKeyRequest, PartialKeyResponse>),
+    AuthorizedPeers(request_response::Event<AuthorizedPeersRequest, WireTree>),
 }
 
 // The allow list emits no event.
@@ -141,6 +145,12 @@ impl From<ping::Event> for NodeBehaviourEvent {
 impl From<request_response::Event<PartialKeyRequest, PartialKeyResponse>> for NodeBehaviourEvent {
     fn from(event: request_response::Event<PartialKeyRequest, PartialKeyResponse>) -> Self {
         NodeBehaviourEvent::KeyExchange(event)
+    }
+}
+
+impl From<request_response::Event<AuthorizedPeersRequest, WireTree>> for NodeBehaviourEvent {
+    fn from(event: request_response::Event<AuthorizedPeersRequest, WireTree>) -> Self {
+        NodeBehaviourEvent::AuthorizedPeers(event)
     }
 }
 

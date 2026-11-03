@@ -303,6 +303,7 @@ dependencies = [
  "clap",
  "directories",
  "futures",
+ "hex",
  "jsonrpsee",
  "libp2p",
  "serde",

@@ -69,6 +69,12 @@ The authorized peers after the call, as for `authorized_nodes`. Authorizing
 peers that are all authorized already changes nothing: the answer is the
 current state, and no new tree is signed.
 
+Each new tree is published to the validators (see "How validators learn the
+list"). A call whose tree would no longer fit a gossipsub message (about
+1150 peers) is refused with `Authorization failed: Authorized peers: A tree of
+<n> peers takes <size> bytes on the network, more than 64512: nothing was
+changed`, and nothing is applied.
+
 ### revoke_node
 
 Revokes peers: the relayer closes their connections and refuses new ones.
@@ -81,6 +87,8 @@ Revokes peers: the relayer closes their connections and refuses new ones.
 
 The authorized peers after the call, as for `authorized_nodes`. Revoking
 peers none of which is authorized changes nothing and signs no new tree.
+Each new tree is published: every validator that accepts it closes its
+connections to the revoked peers, too.
 
 ### authorized_nodes
 
@@ -105,6 +113,25 @@ Lists the authorized peers. No parameter.
 
 On day one no peer is authorized: the relayer denies every connection until
 the administrator authorizes one.
+
+### How validators learn the list
+
+The relayer publishes each tree it signs on the gossipsub topic
+`authorized_peers`, and answers `/authorized-peers/1.0.0` with its current
+tree. A validator asks for it each time it connects to the relayer, so one
+that joins late gets the list too, and every 15 seconds after that, so a
+publication gossipsub dropped still reaches it. On both, the tree travels as
+the JSON object `{"peers":[…],"root":"…","timestamp":…,"signature":"…"}`:
+the peer IDs sorted, the root and the signature in hex. The receiver rebuilds
+the proofs. A tree larger than 64512 bytes is refused on both before it is
+decoded.
+
+A validator checks the signature with the relayer's key, which it takes from
+`--bootstrap-peer-id` (an ed25519 peer ID embeds it; one that does not stops
+the validator at start), checks that the peers match the signed root, and
+accepts the tree only when it is newer than the one it holds. It then lets
+the relayer and the tree's peers connect, and no one else: until it holds a
+tree, it allows the relayer only.
 
 ### Where the list is kept
 

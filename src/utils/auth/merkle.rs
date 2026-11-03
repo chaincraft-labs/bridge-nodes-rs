@@ -1,6 +1,6 @@
 use chrono::Utc;
 use libp2p::PeerId;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use super::types::{AuthorizedPeersTree, MerkleProof};
 
@@ -111,6 +111,27 @@ impl AuthorizedPeersTree {
             .copied()
             .unwrap_or(EMPTY_ROOT);
         (root, proofs)
+    }
+
+    /// The tree over `peers` carrying a root, a timestamp and a signature
+    /// received from elsewhere: the proofs are rebuilt, the root is kept as
+    /// given. `is_consistent` tells whether that root is the one of `peers`,
+    /// and `verify_signature` whether it was signed.
+    pub fn from_signed_parts(
+        peers: impl IntoIterator<Item = PeerId>,
+        root: [u8; 32],
+        timestamp: i64,
+        signature: Vec<u8>,
+    ) -> Self {
+        let peers: BTreeSet<PeerId> = peers.into_iter().collect();
+        let peers: Vec<PeerId> = peers.into_iter().collect();
+        let (_, proofs) = Self::build(&peers);
+        Self {
+            root,
+            peers: proofs,
+            timestamp,
+            signature,
+        }
     }
 
     // Updates the tree with a new list of peers, then signs it. The timestamp
