@@ -18,15 +18,23 @@ decentralized bridge whose transfers are validated by threshold signatures
   handshake. The relayer keeps a Merkle tree of the authorized peer IDs,
   signed with its key; an administrator edits it over the RPC
   (`authorize_node`, `revoke_node`, `authorized_nodes`), and the relayer
-  denies a connection from any peer not in it. By design the relayer also
-  distributes the signed tree so every node can check who it talks to: that
-  part does not exist yet, and validators enforce nothing.
+  denies a connection from any peer not in it. The relayer distributes the
+  signed tree to every validator: it publishes each new tree on the
+  gossipsub topic `authorized_peers`, and answers `/authorized-peers/1.0.0`,
+  which a validator asks each time it connects to it and every 15 seconds
+  after that. A validator checks the signature with the relayer's key, taken
+  from `--bootstrap-peer-id` (an ed25519 peer ID embeds its key), then that
+  the tree's peers match its root and that it is newer than the one it
+  holds. It then denies, with `allow_block_list`, any peer that is neither
+  the relayer nor in that tree.
 
 Layout: `src/main.rs` (CLI), `src/node/` (`common.rs` swarm and shared
 events, `relayer.rs`, `validator.rs`, `authorized.rs` the relayer's
-authorized peers and their file), `src/rpc/` (jsonrpsee server, documented in
+authorized peers and their file, `held.rs` a validator's held tree and its
+acceptance), `src/rpc/` (jsonrpsee server, documented in
 `docs/rpc/README.md`), `src/types/` (behaviour, events, config, errors),
-`src/utils/auth/` (the signed Merkle tree), `src/utils/peer_id.rs`
+`src/utils/auth/` (the signed Merkle tree, and `wire.rs` its encoding on the
+network), `src/utils/peer_id.rs`
 (identities and the keypair file), `scripts/` (`smoke.sh`; `run-relayer.sh`
 and `run-network.sh`, which start one relayer, or a relayer and a validator
 it authorized, for an agent that tests the running nodes).
@@ -47,11 +55,14 @@ scripts/smoke.sh            # after `cargo build`; about 20 seconds
 RPC's HTTP handling, and the relayer's and validator's event handling
 against in-process test peers. It never runs the binary. Any change to the
 swarm, the behaviours, the event loops or the RPC must also pass
-`scripts/smoke.sh`, which runs a relayer, an authorized validator and an
-outsider on loopback. It checks that an idle relayer answers the RPC at
+`scripts/smoke.sh`, which runs a relayer, two authorized validators and two
+outsiders on loopback. It checks that an idle relayer answers the RPC at
 once, the connection, gossipsub delivery, the key exchange triggered over
-RPC, that the relayer denies the outsider, and that `revoke_node` cuts the
-validator off.
+RPC, that each validator accepts the signed tree, that the two validators
+find each other through Kademlia, that the relayer denies an outsider and a
+validator denies one that dials it directly, that revoking the second
+validator makes the first close its connection to it, and that `revoke_node`
+cuts the first validator off.
 
 CI (`.github/workflows/ci.yml`) plays this block on every pull request and
 every push to `dev` and `main`, on Linux and macOS, and the advisories check
@@ -77,8 +88,9 @@ leave the invariant as it is and report the conflict.
    `test_keypair_file_format_is_stable` and
    `test_existing_keypair_file_is_read_back` pin it.
 3. **Wire names.** Peers built from different commits must keep talking:
-   the request-response protocol `/key-exchange/1.0.0`, the gossipsub topic
-   `custom_events`, the identify protocol `chaincraft-p2p/1.0.0` and the
+   the request-response protocols `/key-exchange/1.0.0` and
+   `/authorized-peers/1.0.0`, the gossipsub topics `custom_events` and
+   `authorized_peers`, the identify protocol `chaincraft-p2p/1.0.0` and the
    Kademlia protocol `/ipfs/kad/1.0.0`. Change one only together with a
    version bump of that protocol.
 4. **Default ports.** P2P on UDP 62649 (relayer) and 62650 (validator); RPC on
@@ -91,8 +103,9 @@ leave the invariant as it is and report the conflict.
    and every tree it signs has a greater timestamp than the one before,
    across restarts. `test_root_follows_the_documented_layout`,
    `test_known_answer_root_over_the_test_seeds` and
-   `test_signed_message_is_tag_root_then_big_endian_timestamp` pin it. Once
-   the tree is distributed, this is a wire format too.
+   `test_signed_message_is_tag_root_then_big_endian_timestamp` pin it. The
+   relayer distributes the tree, so this is a wire format too: a validator
+   built from another commit must still check what the relayer signs.
 6. **The authorized peers file.** Outside `--local-test`, the relayer keeps
    its current tree in `$HOME/.chaincraft/authorized_peers.json`, the JSON
    encoding of `AuthorizedPeersTree`, directory mode 0700 and file mode
@@ -105,6 +118,17 @@ leave the invariant as it is and report the conflict.
    `src/node/testdata/authorized_peers.json`. The serde encoding of
    `AuthorizedPeersTree` and `MerkleProof` is this file's format: another
    encoding, for the network for instance, is another type.
+7. **The wire encoding of the tree.** On the topic `authorized_peers` and in
+   the responses of `/authorized-peers/1.0.0`, the tree travels as
+   `WireTree` (`src/utils/auth/wire.rs`), not as the file's encoding: the
+   JSON object `{"peers","root","timestamp","signature"}`, with the peer IDs
+   in base58 and sorted, the root and the signature in lowercase hex, and no
+   proofs, which the receiver rebuilds from the peers. Unknown fields are
+   refused. An encoded tree takes at most 64512 bytes
+   (`MAX_WIRE_TREE_BYTES`, gossipsub's 65536 less room for its envelope),
+   and the relayer refuses an update whose tree would not fit. The request
+   is the empty object `{}`. `test_wire_encoding_is_stable` pins it, against
+   `src/utils/auth/testdata/authorized_peers.wire.json`.
 
 ## Rules
 
@@ -137,12 +161,15 @@ leave the invariant as it is and report the conflict.
 Recorded so they are not mistaken for regressions. Fix one only when the task
 asks for it.
 
-- The validator's run loop holds the swarm lock across
-  `swarm.next().await`. It serves no RPC today, but a call that needed its
-  swarm would wait until the next swarm event. The relayer's run loop owns
-  its swarm and serves RPC commands through a channel.
+- The validator's run loop holds the swarm lock while it waits for the next
+  swarm event or the next periodic pull of the tree, whichever comes first.
+  It serves no RPC today, but a call that needed its swarm would wait that
+  long. The relayer's run loop owns its swarm and serves RPC commands through
+  a channel.
 - The JSON-RPC server is unauthenticated, and it authorizes peers: whatever
-  reaches it administers the network. It listens on `127.0.0.1` unless
+  reaches it administers the network, validators included, since they
+  enforce the tree it signs. It listens on `127.0.0.1` unless
   `--rpc-address` says otherwise.
-- Gossipsub keeps no history: a node that joins late misses every message
-  published before it arrived.
+- Gossipsub keeps no history: a node that joins late misses every event
+  published on `custom_events` before it arrived. The signed tree is not
+  affected: a validator pulls it on connect.

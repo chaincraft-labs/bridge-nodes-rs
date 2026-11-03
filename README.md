@@ -12,7 +12,7 @@ This project is a Rust-based decentralized bridge node designed to validate tran
   - GossipSub for reliable pub/sub message propagation
   - Two node types:
     - Relayer: the bootstrap node, the network's entry point and administrator, which also serves the JSON-RPC API and refuses any peer an administrator has not authorized
-    - Validators: nodes that join through the relayer, then handle routing and message propagation
+    - Validators: nodes that join through the relayer, then handle routing and message propagation. Each one receives the list of authorized peers the relayer signed, checks the signature, and refuses any peer that is not on it
 
 ## Installation
 
@@ -121,7 +121,7 @@ This project is a Rust-based decentralized bridge node designed to validate tran
     }' http://127.0.0.1:8545
     ```
 
-    `revoke_node` removes peers and closes their connections, and `authorized_nodes` lists them. A validator started with `--local-test` gets a new random peer ID on every run, so it cannot be authorized beforehand.
+    `revoke_node` removes peers and closes their connections, on the relayer and on every validator, and `authorized_nodes` lists them. A validator started with `--local-test` gets a new random peer ID on every run, so it cannot be authorized beforehand.
 
 3. Start a validator
 
@@ -130,6 +130,8 @@ This project is a Rust-based decentralized bridge node designed to validate tran
 
     # Example: a relayer running on the same machine
     RUST_LOG=info cargo run -- --validator --bootstrap-address 127.0.0.1 --bootstrap-peer-id <relayer peer ID>
+
+    # --bootstrap-peer-id is the relayer's peer ID: the validator checks the relayer's signature with the key it embeds
 
     # [optional] --port <port> (default is 62650, UDP)
     # [optional] --bootstrap-port <port> (default is 62649, the relayer's default)

@@ -1,6 +1,6 @@
 # Run nodes with Docker
 
-## Built the image
+## Build the image
 
 ```sh
 docker build -t libp2p-node:latest .
@@ -9,7 +9,7 @@ docker build -t libp2p-node:latest .
 ## Start the nodes
 
 ```sh
-docker compose -f DockerCompose.yml u
+docker compose -f DockerCompose.yml up
 ```
 
 ## Connect to the nodes
