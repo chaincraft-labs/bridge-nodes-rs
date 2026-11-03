@@ -1,4 +1,4 @@
-# Commun commands for nodes
+# Common commands for nodes
 
 ## Create a new peer id
 
@@ -24,6 +24,22 @@ Peer ID : 12D3KooWKpXWhPYWxAmWhHiEWF2GDew2tAF1hLdnjBwjcTM8HACx
 2024-12-09T21:22:52.745567Z  INFO validator_node::node::common: Listening on /ip4/127.0.0.1/udp/62649/quic-v1
 2024-12-09T21:22:52.745667Z  INFO validator_node::node::common: Listening on /ip4/172.21.0.2/udp/62649/quic-v1
 2024-12-09T21:22:53.272138Z  WARN libp2p_kad::behaviour: Failed to trigger bootstrap: No known peers.
+```
+
+## Authorize the validator
+
+The relayer refuses any peer it has not authorized, and so does every
+validator. Read the validator's peer ID on its node
+(`./validator_node --read-peer-id`), then authorize it on the relayer's node,
+where the JSON-RPC API listens on `127.0.0.1:8545`:
+
+```sh
+curl -X POST -H "Content-Type: application/json" --data '{
+  "jsonrpc": "2.0",
+  "method": "authorize_node",
+  "params": { "peer_ids": ["<validator peer ID>"] },
+  "id": 1
+}' http://127.0.0.1:8545
 ```
 
 ## Start a validator node
