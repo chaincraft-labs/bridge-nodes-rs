@@ -53,6 +53,10 @@ once, the connection, gossipsub delivery, the key exchange triggered over
 RPC, that the relayer denies the outsider, and that `revoke_node` cuts the
 validator off.
 
+CI (`.github/workflows/ci.yml`) plays this block on every pull request and
+every push to `dev` and `main`, on Linux and macOS, and the advisories check
+every day over `main` and `dev`.
+
 The toolchain is pinned in `rust-toolchain.toml` and must match the builder
 image in `Dockerfile`: change both together.
 
