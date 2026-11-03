@@ -1,0 +1,119 @@
+# Plays the "Build and verify" block of AGENTS.md, so that a pull request is
+# judged on more than the word of whoever ran the commands locally.
+#
+# Only GitHub's own actions, on major tags. A third-party action would be
+# pinned to a commit digest, with its version in a comment. The toolchain is
+# the one `rust-toolchain.toml` names, which rustup installs.
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [dev, main]
+  # An advisory is published without any change here, so the audit also runs
+  # every day, over `main` and `dev`. GitHub schedules a workflow only from
+  # the default branch, `main`.
+  schedule:
+    - cron: "23 5 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  check:
+    name: ${{ matrix.os }}
+    if: github.event_name != 'schedule'
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        # Linux is where the Dockerfile runs the nodes; macOS is where they are
+        # developed, with the system's bash 3.2. A named Ubuntu, not
+        # `ubuntu-latest`, whose meaning changes under the repository.
+        os: [ubuntu-26.04, macos-latest]
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: The toolchain rust-toolchain.toml names
+        run: |
+          rustup toolchain install
+          rustc --version
+          cargo fmt --version
+          cargo clippy --version
+
+      - uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+          key: ${{ matrix.os }}-cargo-${{ hashFiles('rust-toolchain.toml', '**/Cargo.lock') }}
+          restore-keys: ${{ matrix.os }}-cargo-
+
+      - name: Formatting
+        run: cargo fmt --all -- --check
+
+      - name: Clippy, warnings included
+        run: cargo clippy --all-targets --all-features -- -D warnings
+
+      - name: Build
+        run: cargo build
+
+      - name: Tests
+        run: cargo test --all-features
+
+      - name: Smoke test
+        # A relayer, validators and outsiders on loopback, from the debug
+        # binary the build step made. Through `/bin/bash`: on macOS that is
+        # the system's bash 3.2, which a developer's machine runs, where
+        # `env bash` could find a newer one first on the runner's PATH.
+        run: |
+          /bin/bash --version | head -n 1
+          /bin/bash scripts/smoke.sh
+
+      - name: The smoke test's logs
+        if: failure()
+        run: tail -n 100 target/smoke/*.log || true
+
+  supply-chain:
+    name: supply chain${{ matrix.ref && format(' ({0})', matrix.ref) || '' }}
+    runs-on: ubuntu-26.04
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        # Both branches on the daily run; otherwise the code the event names.
+        ref: ${{ fromJSON(github.event_name == 'schedule' && '["main", "dev"]' || '[""]') }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ matrix.ref }}
+
+      - uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/bin/cargo-deny
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+          key: deny-${{ hashFiles('rust-toolchain.toml') }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: deny-${{ hashFiles('rust-toolchain.toml') }}-
+
+      - name: Install cargo-deny if the cache did not carry it
+        run: command -v cargo-deny >/dev/null || cargo install cargo-deny --locked
+
+      - name: Bans, licenses and sources
+        if: matrix.ref == ''
+        run: cargo deny check bans licenses sources
+
+      - name: Advisories
+        run: cargo deny check advisories
